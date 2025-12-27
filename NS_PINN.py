@@ -24,17 +24,17 @@ class NavierStokesPINN(nn.Module):
         return self.net(torch.cat([x,y], dim = 1))
 
 #NS collocation
-N_NS = 7000
-x_NS = torch.rand(N_NS, 1, requires_grad=True)
-y_NS = torch.rand(N_NS, 1, requires_grad=True)
+N_NS = 10000
+x_NS = torch.rand(N_NS, 1, device=device, requires_grad=True)
+y_NS = torch.rand(N_NS, 1, device=device, requires_grad=True)
 
 #Boundary collocation
 N_b = 2000
-x_b = torch.rand(N_b, 1, requires_grad=True)
+x_b = torch.rand(N_b, 1, device=device, requires_grad=True)
 
 #y belongs to [0,1]
-y_bottom = torch.zeros(N_b, 1, requires_grad=True)
-y_top = torch.ones(N_b, 1, requires_grad=True) 
+y_bottom = torch.zeros(N_b, 1, device=device, requires_grad=True)
+y_top = torch.ones(N_b, 1, device=device, requires_grad=True) 
 
 #Autodiff
 def grad(u, x):
@@ -48,7 +48,7 @@ def grad(u, x):
 #NS residuals
 nu = 0.01 # Viscosity
 
-model = NavierStokesPINN()
+model = NavierStokesPINN().to(device)
 
 #Training Loop
 

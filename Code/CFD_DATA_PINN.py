@@ -9,7 +9,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
 
 #Load File
-df = pd.read_csv("Flow.csv")
+df = pd.read_csv("Data\Flow.csv")
 
 x = torch.tensor(df["x"].values, dtype=torch.float32, device=device).reshape(-1,1)
 y = torch.tensor(df["y"].values, dtype=torch.float32, device=device).reshape(-1,1)

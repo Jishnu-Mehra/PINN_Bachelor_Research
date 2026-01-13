@@ -11,11 +11,21 @@ print(device)
 #Load File
 df = pd.read_csv("Data\Flow.csv")
 
+x_min, x_max = 0.6, 0.8
+
+# mask = (df["x"] >= x_min) & (df["x"] <= x_max) & ((df["t"] >= 0.09) & (df["t"] <= 0.1))
+
 x = torch.tensor(df["x"].values, dtype=torch.float32, device=device).reshape(-1,1)
 y = torch.tensor(df["y"].values, dtype=torch.float32, device=device).reshape(-1,1)
 u = torch.tensor(df["u"].values, dtype=torch.float32, device=device).reshape(-1,1)
 v = torch.tensor(df["v"].values, dtype=torch.float32, device=device).reshape(-1,1)
 p = torch.tensor(df["p"].values, dtype=torch.float32, device=device).reshape(-1,1)
+
+# x = x[mask]
+# y = y[mask]
+# u = u[mask]
+# v = v[mask]
+# p = p[mask]
 
 x.requires_grad_(True)
 y.requires_grad_(True)
@@ -52,7 +62,6 @@ def grad(u, x):
     )[0]
 
 nu = 0.01 # Viscosity
-u_inf = 1 # Free stream
 
 model = NavierStokesPINN().to(device)
 
@@ -86,7 +95,7 @@ def loss_calc(lambda_data, lambda_NS):
     return ((lambda_data * data_loss()) + (lambda_NS * NS_loss()))
 
 #Hyperparameter
-lambda_data, lambda_NS = 1, 0.1
+lambda_data, lambda_NS = 1, 0.001
 
 #Adam Optimizer
 adam_optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -128,7 +137,7 @@ V = np.sqrt(u**2 + v**2)
 plt.figure(figsize=(10,5))
 cont = plt.contourf(X, Y, V, levels=50, cmap='rainbow')
 plt.colorbar(cont, label='Velocity')
-plt.quiver(X[::10,::10], Y[::10,::10], u[::10,::10], v[::10,::10], alpha=0.5)
+# plt.quiver(X[::10,::10], Y[::10,::10], u[::10,::10], v[::10,::10], alpha=0.5)
 
 plt.title("Fluid Flow(PINN Solution)")
 plt.axis('equal')

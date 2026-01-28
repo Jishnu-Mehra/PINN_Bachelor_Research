@@ -100,6 +100,7 @@ def BC_loss():
 def loss_calc():
     return BC_loss() + NS_loss()
 
+# Gemini code for plotting at multiple epochs
 # Setup Plotting Grid
 nx, ny = 200, 200
 x_p = torch.linspace(0, 1, nx)

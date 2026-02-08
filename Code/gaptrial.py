@@ -8,8 +8,13 @@ import numpy as np
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
 
-def u_analytical(y):
-    return 1 - y**2
+def u_analytical(y, noise_level = 0.1):
+    val = 1 - y**2
+    if noise_level > 0:
+        # Generate Gaussian noise with mean 0 and standard deviation 'noise_level'
+        noise = torch.randn_like(val) * noise_level
+        return val + noise
+    return val
 
 x_min, x_max = 0.4, 0.6
 y_min, y_max = -1.0, 0.0
@@ -68,11 +73,11 @@ def BC_loss():
     #BC collocation on 4 sides of the gap
     N_BC = 500
     
-    x_left = torch.ones(N_BC,1,device=device) * x_min
-    y_left = (y_min + (y_max - y_min) * torch.rand(N_BC,1,device=device))
+    # x_left = torch.ones(N_BC,1,device=device) * x_min
+    # y_left = (y_min + (y_max - y_min) * torch.rand(N_BC,1,device=device))
     
-    x_right = torch.ones(N_BC,1,device=device) * x_max
-    y_right = (y_min + (y_max - y_min) * torch.rand(N_BC,1,device=device))
+    # x_right = torch.ones(N_BC,1,device=device) * x_max
+    # y_right = (y_min + (y_max - y_min) * torch.rand(N_BC,1,device=device))
     
     x_top = (x_min + (x_max - x_min) * torch.rand(N_BC,1,device=device))
     y_top = torch.ones(N_BC,1,device=device) * y_max
@@ -80,25 +85,48 @@ def BC_loss():
     x_bot = (x_min + (x_max - x_min) * torch.rand(N_BC,1,device=device))
     y_bot = torch.ones(N_BC,1,device=device) * y_min
 
-    u_l, v_l, _ = model(x_left, y_left).split(1, dim=1)
-    u_r, v_r, _ = model(x_right, y_right).split(1, dim=1)
+    # u_l, v_l, _ = model(x_left, y_left).split(1, dim=1)
+    # u_r, v_r, _ = model(x_right, y_right).split(1, dim=1)
     u_t, v_t, _ = model(x_top, y_top).split(1, dim=1)
     u_b, v_b, _ = model(x_bot, y_bot).split(1, dim=1)
 
-    target_u_l = u_analytical(y_left)
-    target_u_r = u_analytical(y_right)
+    # target_u_l = u_analytical(y_left)
+    # target_u_r = u_analytical(y_right)
     target_u_t = u_analytical(y_top)
     target_u_b = u_analytical(y_bot)
 
-    loss_u = torch.mean((u_l - target_u_l)**2) + torch.mean((u_r - target_u_r)**2) + \
-             torch.mean((u_t - target_u_t)**2) + torch.mean((u_b - target_u_b)**2)
+    # loss_u = torch.mean((u_l - target_u_l)**2) + torch.mean((u_r - target_u_r)**2) + \
+    #          torch.mean((u_t - target_u_t)**2) + torch.mean((u_b - target_u_b)**2)
+    loss_u = torch.mean((u_t - target_u_t)**2) + torch.mean((u_b - target_u_b)**2)
              
-    loss_v = torch.mean(v_l**2) + torch.mean(v_r**2) + torch.mean(v_t**2) + torch.mean(v_b**2)
+    # loss_v = torch.mean(v_l**2) + torch.mean(v_r**2) + torch.mean(v_t**2) + torch.mean(v_b**2)
+    loss_v = torch.mean(v_t**2) + torch.mean(v_b**2)
              
     return loss_u + loss_v
 
+def Data_loss():
+    N_data = 10
+    x_d = (x_min + (x_max - x_min) * torch.rand(N_data, 1, device=device))
+    y_d = (y_min + (y_max - y_min) * torch.rand(N_data, 1, device=device))
+    
+    u_pred, v_pred, _ = model(x_d, y_d).split(1, dim=1)
+    
+    target_u = u_analytical(y_d)
+    return torch.mean((u_pred - target_u)**2) + torch.mean(v_pred**2)
+
+# def Data_loss():
+#     x_wrong = torch.tensor([[ (x_min + x_max)/2 ]], device=device)
+#     y_wrong = torch.tensor([[ (y_min + y_max)/2 ]], device=device)
+    
+#     u_pred, v_pred, _ = model(x_wrong, y_wrong).split(1, dim=1)
+    
+#     # We are telling the AI that the velocity is 5.0 (unphysical)
+#     target_u = torch.tensor([[5.0]], device=device) 
+    
+#     return torch.mean((u_pred - target_u)**2) + torch.mean(v_pred**2)
+
 def loss_calc():
-    return BC_loss() + NS_loss()
+    return 10 * BC_loss() + NS_loss()
 
 # Gemini code for plotting at multiple epochs
 # Setup Plotting Grid
@@ -110,11 +138,10 @@ mask = (X > x_min) & (X < x_max) & (Y > y_min) & (Y < y_max)
 U_background = u_analytical(Y).numpy()
 
 # Training with Snapshots
-checkpoints = [200, 500, 1000]
+checkpoints = [1, 200, 500, 1000]
 snapshots = {}
-
 adam_optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-print("Starting Training...")
+
 for epoch in range(1001):
     adam_optimizer.zero_grad()
     current_loss = loss_calc()
@@ -127,30 +154,81 @@ for epoch in range(1001):
     if epoch in checkpoints:
         model.eval()
         with torch.no_grad():
-            u_pred, _, _ = model(X.reshape(-1,1).to(device), Y.reshape(-1,1).to(device)).split(1, dim=1)
+            u_pred, _, _ = model(
+                X.reshape(-1,1).to(device),
+                Y.reshape(-1,1).to(device)
+            ).split(1, dim=1)
+
+            u_pinn = u_pred.cpu().reshape(nx, ny).numpy()
+
+            # Combined field
             U_combined = U_background.copy()
-            # Overlay PINN solution onto the analytical background within the mask
-            U_combined[mask.numpy()] = u_pred.cpu().reshape(nx, ny).numpy()[mask.numpy()]
-            # Store both the velocity field and the loss value
-            snapshots[epoch] = (U_combined, current_loss.item())
+            U_combined[mask.numpy()] = u_pinn[mask.numpy()]
+
+            # Percentage error
+            epsilon = 1e-6
+            error = 100 * np.abs(u_pinn - U_background) / (np.abs(U_background) + epsilon)
+            error_gap = np.ma.masked_where(~mask.numpy(), error)
+
+            snapshots[epoch] = {
+                "U": U_combined,
+                "error": error_gap,
+                "loss": current_loss.item()
+            }
+
         model.train()
 
-# Visualization
-fig, axs = plt.subplots(1, 3, figsize=(20, 5))
-for i, epoch in enumerate(checkpoints):
-    ax = axs[i]
-    U_data, loss_val = snapshots[epoch]
-    
-    cf = ax.contourf(X.numpy(), Y.numpy(), U_data, levels=10, cmap='jet')
-    ax.plot([x_min, x_max, x_max, x_min, x_min], [y_min, y_min, y_max, y_max, y_min], 'w--', linewidth=2)
-    
-    # Loss is now included in the title
-    ax.set_title(f"Epoch {epoch}\nLoss: {loss_val:.2e}")
-    ax.set_xlabel("x")
-    if i == 0: ax.set_ylabel("y")
-    ax.axis('equal')
-    plt.colorbar(cf, ax=ax)
+fig, axs = plt.subplots(1, len(checkpoints), figsize=(5*len(checkpoints), 4))
 
+for i, epoch in enumerate(checkpoints):
+    data = snapshots[epoch]
+
+    cf = axs[i].contourf(
+        X.numpy(), Y.numpy(), data["U"],
+        levels=10, cmap='jet'
+    )
+
+    axs[i].plot(
+        [x_min, x_max, x_max, x_min, x_min],
+        [y_min, y_min, y_max, y_max, y_min],
+        'w--', linewidth=2
+    )
+
+    axs[i].set_title(f"Epoch {epoch}\nLoss: {data['loss']:.2e}")
+    axs[i].set_xlabel("x")
+    if i == 0:
+        axs[i].set_ylabel("y")
+    axs[i].axis('equal')
+    plt.colorbar(cf, ax=axs[i])
+
+plt.suptitle("PINN Gap Reconstruction - Velocity Field", fontsize=14)
+plt.tight_layout()
+plt.show()
+
+fig, axs = plt.subplots(1, len(checkpoints), figsize=(5*len(checkpoints), 4))
+
+for i, epoch in enumerate(checkpoints):
+    data = snapshots[epoch]
+
+    cf = axs[i].contourf(
+        X.numpy(), Y.numpy(), data["error"],
+        levels=20, cmap='Blues'
+    )
+
+    axs[i].plot(
+        [x_min, x_max, x_max, x_min, x_min],
+        [y_min, y_min, y_max, y_max, y_min],
+        'k--', linewidth=2
+    )
+
+    axs[i].set_title(f"Epoch {epoch} - Error (%)")
+    axs[i].set_xlabel("x")
+    if i == 0:
+        axs[i].set_ylabel("y")
+    axs[i].axis('equal')
+    plt.colorbar(cf, ax=axs[i])
+
+plt.suptitle("PINN vs Analytical Solution - Percentage Error", fontsize=14)
 plt.tight_layout()
 plt.show()
 

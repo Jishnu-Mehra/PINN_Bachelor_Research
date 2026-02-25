@@ -27,11 +27,11 @@ X, Y = np.meshgrid(x_axis, y_axis, indexing="xy")
 # plt.tight_layout()
 # plt.show()
 
-x_min, x_max = x_axis.min(), x_axis.max()
+x_min, x_max = x_axis.min() + 1, x_axis.max() - 1
 y_min = y_axis.min()
 y_max = 0.1 * y_axis.max()
 
-mask = (Y >= y_min) & (Y <= y_max)
+mask = (Y >= y_min) & (Y <= y_max) & (X >= x_min) & (X <= x_max)
 
 x_t = torch.tensor(x_axis, device=device)
 y_t = torch.tensor(y_axis, device=device)
@@ -57,7 +57,7 @@ class BL_PINN(nn.Module):
             nn.Tanh(),
             nn.Linear(64, 64),
             nn.Tanh(),
-            nn.Linear(64, 2)
+            nn.Linear(64, 3)
         )
 
     def forward(self, x, y):
@@ -80,36 +80,39 @@ def NS_loss():
     x = (x_min + (x_max-x_min)*torch.rand(N,1,device=device)).requires_grad_(True)
     y = (y_min + (y_max-y_min)*torch.rand(N,1,device=device)).requires_grad_(True)
 
-    u, v = model(x,y).split(1,dim=1)
+    u, v, p = model(x,y).split(1,dim=1)
 
     ux = grad(u,x)
     uy = grad(u,y)
     vy = grad(v,y)
     uyy = grad(uy,y)
+    px = grad(p, x)
+    py = grad(p, y)
 
     cont = ux + vy
-    mom  = u*ux + v*uy - nu*uyy
+    momx  = u*ux + v*uy - nu*uyy + (1/1.225)*px
+    momy = (1/1.225)*py
 
-    return torch.mean(cont**2) + torch.mean(mom**2)
+    return torch.mean(cont**2) + torch.mean(momx**2) + torch.mean(momy**2)
 
 def wall_bc():
     x = (x_min + (x_max-x_min)*torch.rand(500,1,device=device))
     y = torch.zeros_like(x)
 
-    u,v = model(x,y).split(1,dim=1)
+    u,v,_ = model(x,y).split(1,dim=1)
     return torch.mean(u**2) + torch.mean(v**2)
 
 def top_bc():
     x = (x_min + (x_max - x_min) * torch.rand(500, 1, device=device))
     y = torch.ones_like(x) * y_max
 
-    u_p, v_p = model(x, y).split(1, dim=1)
+    u_p, v_p,_ = model(x, y).split(1, dim=1)
     u_inf, v_inf = sample_background(x, y)
 
     return torch.mean((u_p - u_inf)**2) + torch.mean((v_p - v_inf)**2)
 
 def loss():
-    return 0.1 * NS_loss() + 10 * wall_bc() + 10 * top_bc()
+    return NS_loss() + 10 * wall_bc() + 10 * top_bc()
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 checkpoints = [1, 200, 500, 1000]
@@ -128,7 +131,7 @@ for epoch in range(1001):
         with torch.no_grad():
             Xg = torch.tensor(X[mask], dtype=torch.float32, device=device).reshape(-1,1)
             Yg = torch.tensor(Y[mask], dtype=torch.float32, device=device).reshape(-1,1)
-            u_pred,_ = model(Xg,Yg).split(1,dim=1)
+            u_pred,_,_ = model(Xg,Yg).split(1,dim=1)
 
             U_comb = u_data.copy()
             U_comb[mask] = u_pred.cpu().numpy().flatten()

@@ -24,7 +24,7 @@ X, Y = np.meshgrid(x_axis, y_axis, indexing="xy")
 
 X_MIN, X_MAX = x_axis.min(), x_axis.max()
 Y_MIN, Y_MAX = y_axis.min(), y_axis.max()
-gap_x_min, gap_x_max = X_MIN + 1, X_MAX - 1
+gap_x_min, gap_x_max = X_MIN + 3, X_MAX - 3
 gap_y_min = Y_MIN
 gap_y_max = 0.1 * Y_MAX
 
@@ -122,9 +122,9 @@ def loss():
     ns   = NS_loss()
     dat  = data_loss()
     bc_b = gap_bc(gap_y_min)
-    bc_t = gap_bc(gap_y_max)
-    total = 0.1*ns + 100*dat + 100*bc_b + 100*bc_t
-    return total, ns.item(), dat.item(), (bc_b + bc_t).item()
+    # bc_t = gap_bc(gap_y_max)
+    total = 0.1*ns + 100*dat + 100*bc_b
+    return total, ns.item(), dat.item(), (bc_b).item()
 
 # --- Training ---
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -183,14 +183,14 @@ for epoch in range(1001):
             U_pred = u_flat.reshape(X.shape).cpu().numpy()
 
         fig, axs = plt.subplots(1, 2, figsize=(14, 3))
-        cf_true = axs[0].contourf(X, Y, u_data, levels=20, cmap="jet")
+        cf_true = axs[0].contourf(X, Y, u_data, levels=20, cmap="jet", vmin = 0, vmax=1)
         axs[0].plot([gap_x_min, gap_x_max, gap_x_max, gap_x_min, gap_x_min],
                     [gap_y_min, gap_y_min, gap_y_max, gap_y_max, gap_y_min], 'k--', lw=1.5)
         axs[0].set_title(f"Ground Truth (Epoch {epoch})")
         axs[0].set_xlabel("x"); axs[0].set_ylabel("y")
         plt.colorbar(cf_true, ax=axs[0])
 
-        cf_pred = axs[1].contourf(X, Y, U_pred, levels=20, cmap="jet")
+        cf_pred = axs[1].contourf(X, Y, U_pred, levels=20, cmap="jet", vmin=0, vmax=1)
         axs[1].plot([gap_x_min, gap_x_max, gap_x_max, gap_x_min, gap_x_min],
                     [gap_y_min, gap_y_min, gap_y_max, gap_y_max, gap_y_min], 'k--', lw=1.5)
         axs[1].set_title(f"PINN Prediction (Epoch {epoch})")

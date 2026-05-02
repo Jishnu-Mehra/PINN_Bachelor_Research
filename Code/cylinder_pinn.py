@@ -75,18 +75,16 @@ Y_MIN, Y_MAX = y_axis.min(), y_axis.max()
 cx, cy = 50, 50
 r = 25
 
-cylinder = (X - cx)**2 + (Y - cy)**2 <= r**2
+# Distance matrix for radial calculations
+dist = np.sqrt((X - cx)**2 + (Y - cy)**2)
+cylinder = dist <= r
 
-gap_w, gap_h = 60, 60
-gap_x_min = cx - gap_h // 2
-gap_x_max = cx + gap_h // 2
-gap_y_min = cy - gap_w // 2
-gap_y_max = cy + gap_w // 2
+# --- NEW: Annular Gap Parameters ---
+gap_thickness = 10  # Thickness of the unknown region
+R_outer = r + gap_thickness
 
-gap_mask = (X >= gap_x_min) & (X <= gap_x_max) & \
-           (Y >= gap_y_min) & (Y <= gap_y_max)
-
-gap_mask = gap_mask & (~cylinder)
+# Gap mask: area strictly between the cylinder surface and R_outer
+gap_mask = (dist <= R_outer) & (~cylinder)
 
 # ------------------ TENSORS ------------------
 
@@ -97,13 +95,9 @@ U_gap_t = torch.tensor(u_grid[gap_mask], dtype=torch.float32, device=device).uns
 V_gap_t = torch.tensor(v_grid[gap_mask], dtype=torch.float32, device=device).unsqueeze(1)
 
 # --- GAP BOUNDARY (for BC) ---
-boundary_mask = (
-    ((X == gap_x_min) | (X == gap_x_max)) & (Y >= gap_y_min) & (Y <= gap_y_max)
-) | (
-    ((Y == gap_y_min) | (Y == gap_y_max)) & (X >= gap_x_min) & (X <= gap_x_max)
-)
-
-boundary_mask = boundary_mask & (~cylinder)
+# Select a thin ring (approx 2 units wide) exactly on the boundary of R_outer 
+# so the network has data anchoring it right at the transition.
+boundary_mask = (dist > R_outer) & (dist <= R_outer + 1.0)
 
 X_b_t = torch.tensor(X[boundary_mask], dtype=torch.float32, device=device).unsqueeze(1)
 Y_b_t = torch.tensor(Y[boundary_mask], dtype=torch.float32, device=device).unsqueeze(1)
@@ -130,7 +124,7 @@ h = 64
 nu = 1e-5
 
 b_ns = 2000
-b_data = 1000
+b_data = 100
 b_bc = 500
 b_gap = 500
 
@@ -197,16 +191,16 @@ def NS_loss():
     return NS_loss_fn(X_gap_t[idx], Y_gap_t[idx])
 
 
-# --- DATA LOSS (gap interior, as you intended) ---
+# --- DATA LOSS (gap exterior) ---
 def data_loss():
     if w_data == 0:
         return torch.tensor(0.0, device=device)
 
-    idx = torch.randperm(len(X_gap_t), device=device)[:b_data]
-    u_p, v_p, _ = model(X_gap_t[idx], Y_gap_t[idx]).split(1, dim=1)
+    idx = torch.randperm(len(X_out_t), device=device)[:b_data]
+    u_p, v_p, _ = model(X_out_t[idx], Y_out_t[idx]).split(1, dim=1)
 
-    return torch.mean((u_p - U_gap_t[idx])**2) + \
-           torch.mean((v_p - V_gap_t[idx])**2)
+    return torch.mean((u_p - U_out_t[idx])**2) + \
+           torch.mean((v_p - V_out_t[idx])**2)
 
 
 # --- CYLINDER BC ---
@@ -219,7 +213,7 @@ def bc_cylinder():
     return torch.mean(u**2 + v**2)
 
 
-# --- GAP BOUNDARY BC (NEW, separate) ---
+# --- GAP BOUNDARY BC ---
 def bc_gap():
     idx = torch.randperm(len(X_b_t), device=device)[:b_gap]
 
@@ -309,7 +303,6 @@ for epoch in range(1001):
 
         with torch.no_grad():
             u_flat, v_flat, _ = model(X_flat_t, Y_flat_t).split(1, dim=1)
-
             U_pred = torch.sqrt(u_flat**2 + v_flat**2).reshape(X.shape).cpu().numpy()
 
         # shared normalization
@@ -326,18 +319,15 @@ for epoch in range(1001):
             vmax=vmax
         )
 
-        axs[0].plot([gap_x_min, gap_x_max, gap_x_max, gap_x_min, gap_x_min],
-                    [gap_y_min, gap_y_min, gap_y_max, gap_y_max, gap_y_min],
-                    'k--', lw=1.5)
-
-        circle0 = plt.Circle((cx, cy), r, color='k', fill=False, linestyle='--')
-        axs[0].add_patch(circle0)
+        circle_cylinder0 = plt.Circle((cx, cy), r, color='k', fill=False, linestyle='-')
+        circle_outer0 = plt.Circle((cx, cy), R_outer, color='k', fill=False, linestyle='--')
+        axs[0].add_patch(circle_cylinder0)
+        axs[0].add_patch(circle_outer0)
 
         axs[0].set_title(f"Ground Truth |U| (Epoch {epoch})")
         axs[0].set_xlabel("x")
         axs[0].set_ylabel("y")
         axs[0].axis("equal")
-
         plt.colorbar(cf_true, ax=axs[0])
 
         # ------------------ PREDICTION ------------------
@@ -349,18 +339,15 @@ for epoch in range(1001):
             vmax=vmax
         )
 
-        axs[1].plot([gap_x_min, gap_x_max, gap_x_max, gap_x_min, gap_x_min],
-                    [gap_y_min, gap_y_min, gap_y_max, gap_y_max, gap_y_min],
-                    'k--', lw=1.5)
-
-        circle1 = plt.Circle((cx, cy), r, color='k', fill=False, linestyle='--')
-        axs[1].add_patch(circle1)
+        circle_cylinder1 = plt.Circle((cx, cy), r, color='k', fill=False, linestyle='-')
+        circle_outer1 = plt.Circle((cx, cy), R_outer, color='k', fill=False, linestyle='--')
+        axs[1].add_patch(circle_cylinder1)
+        axs[1].add_patch(circle_outer1)
 
         axs[1].set_title(f"PINN Prediction |U| (Epoch {epoch})")
         axs[1].set_xlabel("x")
         axs[1].set_ylabel("y")
         axs[1].axis("equal")
-
         plt.colorbar(cf_pred, ax=axs[1])
 
         plt.suptitle(f"Epoch {epoch} Comparison", fontsize=14)
@@ -390,3 +377,53 @@ axs[1].grid(True, which="both", ls="--", alpha=0.5)
 
 plt.tight_layout()
 plt.show()
+
+model.eval()
+
+with torch.no_grad():
+    u, v, _ = model(X_flat_t, Y_flat_t).split(1, dim=1)
+    U_pred = torch.sqrt(u**2 + v**2).reshape(X.shape).cpu().numpy()
+
+U_true = np.sqrt(u_grid**2 + v_grid**2)
+
+U_hybrid = U_true.copy()
+U_hybrid[gap_mask] = U_pred[gap_mask]
+
+vmin = U_true.min()
+vmax = U_true.max()
+
+plt.contourf(X, Y, U_hybrid, levels=20, cmap="jet", vmin=vmin, vmax=vmax)
+plt.gca().set_aspect('equal')
+
+circle_cylinder = plt.Circle((cx, cy), r, color='k', fill=False, linestyle='-')
+circle_outer = plt.Circle((cx, cy), R_outer, color='k', fill=False, linestyle='--')
+plt.gca().add_patch(circle_cylinder)
+plt.gca().add_patch(circle_outer)
+
+plt.title("PINN in Annular Gap + Ground Truth Outside")
+plt.colorbar()
+plt.show()
+
+# ------------------ SAVE PINN SOLUTION ------------------
+model.eval()
+
+with torch.no_grad():
+    # Predict on the full precomputed grid tensors
+    preds = model(X_flat_t, Y_flat_t)
+    u_pred_flat, v_pred_flat, p_pred_flat = preds.split(1, dim=1)
+
+    # Reshape back to the original grid shape (ny, nx)
+    u_p = u_pred_flat.reshape(ny, nx).cpu().numpy()
+    v_p = v_pred_flat.reshape(ny, nx).cpu().numpy()
+    p_p = p_pred_flat.reshape(ny, nx).cpu().numpy()
+
+# Save as an npz file
+save_path = f"pinn_cylinder_solution_{gap_thickness}.npz"
+np.savez(save_path, 
+         x=x_axis, 
+         y=y_axis, 
+         u=u_p, 
+         v=v_p, 
+         p=p_p)
+
+print(f"Successfully saved PINN solution to {save_path}")

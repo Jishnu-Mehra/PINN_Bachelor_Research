@@ -457,10 +457,13 @@ U_true = np.sqrt(u_grid**2 + v_grid**2)
 U_hybrid = U_true.copy()
 U_hybrid[gap_mask] = U_pred[gap_mask]
 
-vmin = U_true.min()
-vmax = U_true.max()
+valid = (~cylinder) & (~np.isnan(U_true)) & (~np.isnan(U_pred))
 
-plt.contourf(X, Y, U_hybrid, levels=20, cmap="jet", vmin=vmin, vmax=vmax)
+vmin = np.min(U_true[valid])
+vmax = np.max(U_true[valid])
+
+U_plot = np.ma.array(U_hybrid, mask=cylinder)
+plt.contourf(X, Y, U_plot, levels=20, cmap="jet", vmin=vmin, vmax=vmax)
 plt.gca().set_aspect('equal')
 circle = plt.Circle((cx, cy), r, color='k', fill=False, linestyle='--')
 plt.gca().add_patch(circle)

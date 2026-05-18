@@ -1,0 +1,321 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+data = np.load("postprocess_data.npz")
+
+X = data["X"]
+Y = data["Y"]
+cylinder = data["cylinder"]
+gap_mask = data["gap_mask"]
+
+cx = float(data["cx"])
+cy = float(data["cy"])
+r  = float(data["r"])
+
+u_grid = data["u_grid"]
+v_grid = data["v_grid"]
+
+gap_thickness = float(data["gap_thickness"])
+
+X_MIN = X.min()
+X_MAX = X.max()
+
+Y_MIN = Y.min()
+Y_MAX = Y.max()
+
+h = 64 #128
+
+def normalise(val, vmin, vmax):
+    return 2.0 * (val - vmin) / (vmax - vmin) - 1.0
+
+
+class PINN(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.net = nn.Sequential(
+            nn.Linear(2, h),
+            nn.Tanh(),
+
+            nn.Linear(h, h),
+            nn.Tanh(),
+
+            nn.Linear(h, h),
+            nn.Tanh(),
+
+            # nn.Linear(h, h),
+            # nn.Tanh(),
+
+            # nn.Linear(h, h),
+            # nn.Tanh(),
+
+            nn.Linear(h, 3)
+        )
+
+    def forward(self, x, y):
+
+        xn = normalise(x, X_MIN, X_MAX)
+        yn = normalise(y, Y_MIN, Y_MAX)
+
+        return self.net(torch.cat([xn, yn], dim=1))
+
+
+def grad(f, x):
+    return torch.autograd.grad(
+        f,
+        x,
+        grad_outputs=torch.ones_like(f),
+        create_graph=True
+    )[0]
+
+model = PINN().to(device)
+
+model.load_state_dict(
+    torch.load(
+        "PINN_Bachelor_Research/Code/RealCyltFlow/cylinder_pinn.pt",
+        map_location=device
+    )
+)
+
+model.eval()
+
+print("Model loaded.")
+
+X_flat_t = torch.tensor(
+    X.flatten(),
+    dtype=torch.float32,
+    device=device
+).unsqueeze(1)
+
+Y_flat_t = torch.tensor(
+    Y.flatten(),
+    dtype=torch.float32,
+    device=device
+).unsqueeze(1)
+
+with torch.no_grad():
+    u_full, v_full, p_full = model(X_flat_t, Y_flat_t).split(1, dim=1)
+
+u_full = u_full.reshape(X.shape).cpu().numpy()
+v_full = v_full.reshape(X.shape).cpu().numpy()
+
+U_full = np.sqrt(u_full**2 + v_full**2)
+
+valid_far = (~cylinder) & (~np.isnan(U_full))
+
+U_inf = np.percentile(U_full[valid_far], 95)
+
+print("U_inf: ", U_inf)
+
+rho = 1.0
+nu = 1e-5
+
+theta = np.linspace(0, 2*np.pi, 360)
+
+x_wall = cx + r*np.cos(theta)
+y_wall = cy + r*np.sin(theta)
+
+xw_t = torch.tensor(
+    x_wall,
+    dtype=torch.float32,
+    device=device
+).unsqueeze(1)
+
+yw_t = torch.tensor(
+    y_wall,
+    dtype=torch.float32,
+    device=device
+).unsqueeze(1)
+
+xw_t.requires_grad_(True)
+yw_t.requires_grad_(True)
+
+uw, vw, _ = model(xw_t, yw_t).split(1, dim=1)
+
+ux = grad(uw, xw_t)
+uy = grad(uw, yw_t)
+
+vx = grad(vw, xw_t)
+vy = grad(vw, yw_t)
+
+nx = torch.cos(
+    torch.tensor(theta, dtype=torch.float32, device=device)
+).unsqueeze(1)
+
+ny = torch.sin(
+    torch.tensor(theta, dtype=torch.float32, device=device)
+).unsqueeze(1)
+
+tx = ny
+ty = -nx
+
+du_dn = ux*nx + uy*ny
+dv_dn = vx*nx + vy*ny
+
+dut_dn = du_dn*tx + dv_dn*ty
+
+tau_w = rho * nu * dut_dn
+
+Cf = 2 * tau_w / (rho * U_inf**2)
+
+Cf_n = Cf.detach().cpu().numpy().flatten()
+
+plt.figure(figsize=(8,4))
+
+plt.plot(np.degrees(theta), Cf_n)
+
+plt.xlabel("theta [deg]")
+plt.ylabel("C_f")
+
+plt.title("Skin Friction Coefficient")
+
+plt.grid(True)
+
+plt.show()
+
+angles = [0, 45, 90, 135, 180]
+
+plt.figure(figsize=(7,5))
+
+for ang in angles:
+
+    th = np.radians(ang)
+
+    x0 = cx + r*np.cos(th)
+    y0 = cy + r*np.sin(th)
+
+    nx = np.cos(th)
+    ny = np.sin(th)
+
+    tx = ny
+    ty = -nx
+
+    eta = np.linspace(0, 40, 200)
+
+    xs = x0 + nx*eta
+    ys = y0 + ny*eta
+
+    xs_t = torch.tensor(
+        xs,
+        dtype=torch.float32,
+        device=device
+    ).unsqueeze(1)
+
+    ys_t = torch.tensor(
+        ys,
+        dtype=torch.float32,
+        device=device
+    ).unsqueeze(1)
+
+    with torch.no_grad():
+        u, v, _ = model(xs_t, ys_t).split(1, dim=1)
+
+    u = u.cpu().numpy().flatten()
+    v = v.cpu().numpy().flatten()
+
+    ut = u*tx + v*ty
+
+    plt.plot(ut/U_inf,eta/r,label=ang)
+
+plt.xlabel("u_t/U_inf")
+plt.ylabel("n/R")
+
+plt.title("Boundary Layer Profiles")
+
+plt.legend()
+
+plt.grid(True)
+
+plt.show()
+
+U_plot = np.ma.array(U_full, mask=cylinder)
+
+plt.figure(figsize=(10,4))
+
+plt.contourf(
+    X,
+    Y,
+    U_plot,
+    levels=20,
+    cmap="jet"
+)
+
+circle = plt.Circle(
+    (cx, cy),
+    r,
+    color='k',
+    fill=False,
+    linestyle='--'
+)
+
+plt.gca().add_patch(circle)
+
+plt.gca().set_aspect('equal')
+
+plt.xlabel("x")
+plt.ylabel("y")
+
+plt.title("Full PINN Velocity Magnitude")
+
+plt.colorbar(label="|U|")
+
+plt.show()
+
+U_hybrid = U_full.copy()
+
+U_hybrid[~gap_mask] = np.nan
+
+U_gt = np.sqrt(u_grid**2 + v_grid**2)
+
+U_combined = U_gt.copy()
+
+U_combined[gap_mask] = U_hybrid[gap_mask]
+
+U_combined = np.ma.array(
+    U_combined,
+    mask=cylinder
+)
+
+plt.figure(figsize=(10,4))
+
+plt.contourf(
+    X,
+    Y,
+    U_combined,
+    levels=20,
+    cmap="jet"
+)
+
+circle = plt.Circle(
+    (cx, cy),
+    r,
+    color='k',
+    fill=False,
+    linestyle='--'
+)
+
+circle2 = plt.Circle(
+    (cx, cy),
+    r + gap_thickness,
+    color='k',
+    fill=False,
+    linestyle='--'
+)
+
+plt.gca().add_patch(circle)
+plt.gca().add_patch(circle2)
+
+plt.gca().set_aspect('equal')
+
+plt.xlabel("x")
+plt.ylabel("y")
+
+plt.title("PINN in Gap + Ground Truth Outside")
+
+plt.colorbar(label="|U|")
+
+plt.show()

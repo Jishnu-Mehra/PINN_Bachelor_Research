@@ -184,22 +184,45 @@ print(f"GAP boundary: {len(X_b_t)}")
 print(f"DATA: {len(X_out_t)}")
 
 
+N_wall = 30000
+
+theta_wall = 2*np.pi*np.random.rand(N_wall)
+
+rr = r + gap_thickness * (np.random.rand(N_wall)**2)
+
+x_wall_ns = cx + rr*np.cos(theta_wall)
+y_wall_ns = cy + rr*np.sin(theta_wall)
+
+X_wall_ns_t = torch.tensor(
+    x_wall_ns,
+    dtype=torch.float32,
+    device=device
+).unsqueeze(1).requires_grad_(True)
+
+Y_wall_ns_t = torch.tensor(
+    y_wall_ns,
+    dtype=torch.float32,
+    device=device
+).unsqueeze(1).requires_grad_(True)
+
 # ------------------ HYPERPARAMS ------------------
-h = 64
+
+h = 128
 nu = 1e-5
 
-b_ns = 2000
+b_ns = 4000
 b_data = 10000
-b_bc = 500
-b_gap = 500
+b_bc = 5000
+b_gap = 1000
 
 w_ns = 0.1
-w_bc = 50
+w_bc = 500
 w_data = 100
 w_gap = 50
-
+w_vort = 0.01
 
 # ------------------ MODEL ------------------
+
 def normalise(val, vmin, vmax):
     return 2.0 * (val - vmin) / (vmax - vmin) - 1.0
 
@@ -207,22 +230,38 @@ def normalise(val, vmin, vmax):
 class PINN(nn.Module):
     def __init__(self):
         super().__init__()
+
         self.net = nn.Sequential(
-            nn.Linear(2, h), nn.Tanh(),
-            nn.Linear(h, h), nn.Tanh(),
-            nn.Linear(h, h), nn.Tanh(),
+            nn.Linear(2, h),
+            nn.Tanh(),
+
+            nn.Linear(h, h),
+            nn.Tanh(),
+
+            nn.Linear(h, h),
+            nn.Tanh(),
+
+            nn.Linear(h, h),
+            nn.Tanh(),
+
+            nn.Linear(h, h),
+            nn.Tanh(),
+
             nn.Linear(h, 3)
         )
 
     def forward(self, x, y):
+
         xn = normalise(x, X_MIN, X_MAX)
         yn = normalise(y, Y_MIN, Y_MAX)
+
         return self.net(torch.cat([xn, yn], dim=1))
 
 
 def grad(f, x):
     return torch.autograd.grad(
-        f, x,
+        f,
+        x,
         grad_outputs=torch.ones_like(f),
         create_graph=True
     )[0]
@@ -233,74 +272,170 @@ model = PINN().to(device)
 # ------------------ LOSSES ------------------
 
 def NS_loss_fn(x, y):
+
     u, v, p = model(x, y).split(1, dim=1)
 
-    ux, uy = grad(u, x), grad(u, y)
-    vx, vy = grad(v, x), grad(v, y)
+    ux = grad(u, x)
+    uy = grad(u, y)
 
-    uxx, uyy = grad(ux, x), grad(uy, y)
-    vxx, vyy = grad(vx, x), grad(vy, y)
+    vx = grad(v, x)
+    vy = grad(v, y)
 
-    px, py = grad(p, x), grad(p, y)
+    uxx = grad(ux, x)
+    uyy = grad(uy, y)
+
+    vxx = grad(vx, x)
+    vyy = grad(vy, y)
+
+    px = grad(p, x)
+    py = grad(p, y)
 
     cont = ux + vy
+
     momx = u*ux + v*uy - nu*(uxx + uyy) + px
     momy = u*vx + v*vy - nu*(vxx + vyy) + py
 
-    return torch.mean(cont**2) + torch.mean(momx**2) + torch.mean(momy**2)
+    return (
+        torch.mean(cont**2) +
+        torch.mean(momx**2) +
+        torch.mean(momy**2)
+    )
 
+def vorticity_loss(x, y):
 
-# --- NS ONLY IN GAP ---
+    u, v, _ = model(x, y).split(1, dim=1)
+
+    ux = grad(u, x)
+    uy = grad(u, y)
+
+    vx = grad(v, x)
+    vy = grad(v, y)
+
+    omega = vx - uy
+
+    return torch.mean(omega**2)
+
 def NS_loss():
-    idx = torch.randperm(len(X_gap_t), device=device)[:b_ns]
-    return NS_loss_fn(X_gap_t[idx], Y_gap_t[idx])
 
+    idx1 = torch.randperm(
+        len(X_gap_t),
+        device=device
+    )[:b_ns//2]
 
-# --- DATA LOSS (gap interior, as you intended) ---
+    idx2 = torch.randperm(
+        len(X_wall_ns_t),
+        device=device
+    )[:b_ns//2]
+
+    loss_gap = NS_loss_fn(
+        X_gap_t[idx1],
+        Y_gap_t[idx1]
+    )
+
+    loss_wall = NS_loss_fn(
+        X_wall_ns_t[idx2],
+        Y_wall_ns_t[idx2]
+    )
+
+    return loss_gap + 5*loss_wall
+
 def data_loss():
+
     if w_data == 0:
         return torch.tensor(0.0, device=device)
 
-    idx = torch.randperm(len(X_out_t), device=device)[:b_data]
-    u_p, v_p, _ = model(X_out_t[idx], Y_out_t[idx]).split(1, dim=1)
+    idx = torch.randperm(
+        len(X_out_t),
+        device=device
+    )[:b_data]
 
-    return torch.mean((u_p - U_out_t[idx])**2) + \
-           torch.mean((v_p - V_out_t[idx])**2)
+    u_p, v_p, _ = model(
+        X_out_t[idx],
+        Y_out_t[idx]
+    ).split(1, dim=1)
 
+    return (
+        torch.mean((u_p - U_out_t[idx])**2) +
+        torch.mean((v_p - V_out_t[idx])**2)
+    )
 
-# --- CYLINDER BC ---
 def bc_cylinder():
-    a = 2 * np.pi * torch.rand(b_bc, 1, device=device)
-    x = cx + r * torch.cos(a)
-    y = cy + r * torch.sin(a)
+
+    a = 2*np.pi*torch.rand(
+        b_bc,
+        1,
+        device=device
+    )
+
+    x = cx + r*torch.cos(a)
+    y = cy + r*torch.sin(a)
 
     u, v, _ = model(x, y).split(1, dim=1)
+
     return torch.mean(u**2 + v**2)
 
-
-# --- GAP BOUNDARY BC (NEW, separate) ---
 def bc_gap():
-    idx = torch.randperm(len(X_b_t), device=device)[:b_gap]
 
-    u_p, v_p, _ = model(X_b_t[idx], Y_b_t[idx]).split(1, dim=1)
+    idx = torch.randperm(
+        len(X_b_t),
+        device=device
+    )[:b_gap]
 
-    return torch.mean((u_p - U_b_t[idx])**2) + \
-           torch.mean((v_p - V_b_t[idx])**2)
+    u_p, v_p, _ = model(
+        X_b_t[idx],
+        Y_b_t[idx]
+    ).split(1, dim=1)
+
+    return (
+        torch.mean((u_p - U_b_t[idx])**2) +
+        torch.mean((v_p - V_b_t[idx])**2)
+    )
 
 def loss():
-    ns  = NS_loss()
+
+    ns = NS_loss()
+
+    idx = torch.randperm(
+        len(X_wall_ns_t),
+        device=device
+    )[:b_ns]
+
+    vort = vorticity_loss(
+        X_wall_ns_t[idx],
+        Y_wall_ns_t[idx]
+    )
+
     dat = data_loss()
-    bc  = bc_cylinder()
+
+    bc = bc_cylinder()
+
     gap = bc_gap()
 
-    total = w_ns*ns + w_data*dat + w_bc*bc + w_gap*gap
+    total = (
+        w_ns*ns +
+        w_data*dat +
+        w_bc*bc +
+        w_gap*gap +
+        w_vort*vort
+    )
 
-    return total, ns.item(), dat.item(), bc.item(), gap.item()
+    return (
+        total,
+        ns.item(),
+        dat.item(),
+        bc.item(),
+        gap.item(),
+        vort.item()
+    )
 
 # ------------------ TRAINING + HISTORY ------------------
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-checkpoints = [0, 200, 500, 1000, 2000]
+optimizer = torch.optim.Adam(
+    model.parameters(),
+    lr=1e-3
+)
+
+checkpoints = [0, 500, 1000, 2000, 5000]
 
 history = {
     "epoch":       [],
@@ -309,17 +444,30 @@ history = {
     "loss_data":   [],
     "loss_bc":     [],
     "loss_bc_gap": [],
+    "loss_vort":   [],
     "rel_l2_full": [],
     "rel_l2_gap":  [],
 }
+
+X_flat_t = torch.tensor(
+    X.flatten(),
+    dtype=torch.float32,
+    device=device
+).unsqueeze(1)
+
+Y_flat_t = torch.tensor(
+    Y.flatten(),
+    dtype=torch.float32,
+    device=device
+).unsqueeze(1)
 
 # Precompute full grid tensors
 X_flat_t = torch.tensor(X.flatten(), dtype=torch.float32, device=device).unsqueeze(1)
 Y_flat_t = torch.tensor(Y.flatten(), dtype=torch.float32, device=device).unsqueeze(1)
 
-for epoch in range(2001):
+for epoch in range(5001):
     optimizer.zero_grad()
-    L, ns_val, dat_val, bc_val, bcgap_val = loss()
+    L, ns_val, dat_val, bc_val, bcgap_val, vort_val = loss()
     L.backward()
     optimizer.step()
 
@@ -474,3 +622,26 @@ plt.gca().add_patch(circlee)
 plt.title("PINN in Gap + Ground Truth Outside")
 plt.colorbar()
 plt.show()
+
+torch.save(model.state_dict(), "cylinder_pinn.pt")
+
+print("Model saved.")
+
+np.savez(
+    "postprocess_data.npz",
+
+    X=X,
+    Y=Y,
+
+    cylinder=cylinder,
+    gap_mask=gap_mask,
+
+    u_grid=u_grid,
+    v_grid=v_grid,
+
+    cx=cx,
+    cy=cy,
+    r=r,
+
+    gap_thickness=gap_thickness
+)

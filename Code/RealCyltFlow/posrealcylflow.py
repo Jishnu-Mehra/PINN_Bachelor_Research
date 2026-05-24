@@ -76,7 +76,7 @@ model = PINN().to(device)
 
 model.load_state_dict(
     torch.load(
-        "PINN_Bachelor_Research/Code/RealCyltFlow/cylinder_pinn.pt",
+        "PINN_Bachelor_Research/Code/RealCyltFlow/cylinder_pinn4.pt",
         map_location=device
     )
 )
@@ -153,8 +153,8 @@ ny = torch.sin(
 tx = -ny
 ty = nx
 
-du_dn = ux*nx + uy*ny
-dv_dn = vx*nx + vy*ny
+du_dn = (ux*nx + uy*ny)*1e3
+dv_dn = (vx*nx + vy*ny)*1e3
 
 dut_dn = du_dn*tx + dv_dn*ty
 
@@ -162,7 +162,7 @@ tau_w = rho * nu * dut_dn
 
 Cf = 2 * tau_w / (rho * U_inf**2)
 
-Cf_n = Cf.detach().cpu().numpy().flatten()
+Cf_n = np.abs(Cf.detach().cpu().numpy().flatten())
 
 plt.figure(figsize=(8,4))
 

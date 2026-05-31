@@ -5,7 +5,7 @@ import torch.nn as nn
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-data = np.load("postprocess_data.npz")
+data = np.load("PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/cylinder_pinn_imp0.02.pt")
 
 X = data["X"]
 Y = data["Y"]
@@ -76,7 +76,7 @@ model = PINN().to(device)
 
 model.load_state_dict(
     torch.load(
-        "PINN_Bachelor_Research/Code/RealCyltFlow/cylinder_pinn4.pt",
+        "PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/cylinder_pinn_imp0.02long.pt",
         map_location=device
     )
 )
@@ -177,59 +177,90 @@ plt.grid(True)
 
 plt.show()
 
-angles = np.arange(0, 360, 45) #[0, 45, 90, 135, 180] 
+angles  = np.arange(0, 361, 30)
+eta_max = 40
+N_eta   = 200
+U_inf   = 5.0
+scale   = 18.0   # horizontal scale: how many degrees wide one full U_inf unit spans
+ 
+fig, ax = plt.subplots(figsize=(14, 5))
+ 
+colors = plt.cm.tab10(np.linspace(0, 1, len(angles)))
+ 
+for i, ang in enumerate(angles):
+ 
+    th     = np.radians(ang)
+    x0     = cx + r * np.cos(th)
+    y0     = cy + r * np.sin(th)
+ 
+    nx_vec = np.cos(th)
+    ny_vec = np.sin(th)
 
-plt.figure(figsize=(7,5))
+    tx = -ny_vec
+    ty =  nx_vec
 
-for ang in angles:
-
-    th = np.radians(ang)
-
-    x0 = cx + r*np.cos(th)
-    y0 = cy + r*np.sin(th)
-
-    nx = np.cos(th)
-    ny = np.sin(th)
-
-    tx = -ny
-    ty = nx
-
-    eta = np.linspace(0, 40, 200)
-
-    xs = x0 + nx*eta
-    ys = y0 + ny*eta
-
-    xs_t = torch.tensor(
-        xs,
-        dtype=torch.float32,
-        device=device
-    ).unsqueeze(1)
-
-    ys_t = torch.tensor(
-        ys,
-        dtype=torch.float32,
-        device=device
-    ).unsqueeze(1)
-
+    # flip tangent so it always points in the +x half-plane
+    # i.e. aligns with the free-stream direction locally
+    if tx < 0:
+        tx = -tx
+        ty = -ty
+ 
+    eta = np.linspace(0, eta_max, N_eta)
+    xs  = x0 + nx_vec * eta
+    ys  = y0 + ny_vec * eta
+ 
+    xs_t = torch.tensor(xs, dtype=torch.float32, device=device).unsqueeze(1)
+    ys_t = torch.tensor(ys, dtype=torch.float32, device=device).unsqueeze(1)
+ 
     with torch.no_grad():
         u, v, _ = model(xs_t, ys_t).split(1, dim=1)
-
-    u = u.cpu().numpy().flatten()
-    v = v.cpu().numpy().flatten()
-
-    ut = u*tx + v*ty
-
-    plt.plot(ut/U_inf,eta/r,label=ang)
-
-plt.xlabel("u_t/U_inf")
-plt.ylabel("n/R")
-
-plt.title("Boundary Layer Profiles")
-
-plt.legend()
-
-plt.grid(True)
-
+ 
+    u  = u.cpu().numpy().flatten()
+    v  = v.cpu().numpy().flatten()
+    ut = (u * tx + v * ty) / U_inf
+    nR = eta / r
+ 
+    # x-position = angle + scaled ut value
+    x_plot = ang + ut * scale
+ 
+    # filled area between zero-line and profile
+    ax.fill_betweenx(
+        nR,
+        ang,           # zero line at the angle position
+        x_plot,
+        alpha=0.25,
+        color=colors[i]
+    )
+ 
+    # profile line
+    ax.plot(
+        x_plot,
+        nR,
+        color=colors[i],
+        linewidth=1.5,
+        label=f'{ang}°'
+    )
+ 
+    # zero reference line
+    ax.axvline(
+        ang,
+        color=colors[i],
+        linewidth=0.7,
+        linestyle='--',
+        alpha=0.5
+    )
+ 
+# ---- formatting ----
+ax.set_xticks(angles)
+ax.set_xticklabels([f'{a}°' for a in angles])
+ax.set_xlabel('Angle  θ  [deg]')
+ax.set_ylabel('n / R')
+ax.set_title('Boundary Layer Profiles')
+ax.legend(loc='upper right', fontsize=8, ncol=2)
+ax.grid(True, axis='y', linestyle='--', alpha=0.4)
+ax.set_ylim(bottom=0)
+ 
+plt.tight_layout()
 plt.show()
 
 U_true = np.sqrt(u_grid**2 + v_grid**2)
@@ -439,71 +470,71 @@ plt.contourf(
     cmap='jet'
 )
 
-for ang in angles_vis:
+# for ang in angles_vis:
 
-    th = np.radians(ang)
+#     th = np.radians(ang)
 
-    x0 = cx + r*np.cos(th)
-    y0 = cy + r*np.sin(th)
+#     x0 = cx + r*np.cos(th)
+#     y0 = cy + r*np.sin(th)
 
-    nx = np.cos(th)
-    ny = np.sin(th)
+#     nx = np.cos(th)
+#     ny = np.sin(th)
 
-    tx = -ny
-    ty = nx
+#     tx = -ny
+#     ty = nx
 
-    eta = np.linspace(0, 25, 120)
+#     eta = np.linspace(0, 25, 120)
 
-    xs = x0 + nx*eta
-    ys = y0 + ny*eta
+#     xs = x0 + nx*eta
+#     ys = y0 + ny*eta
 
-    xs_t = torch.tensor(
-        xs,
-        dtype=torch.float32,
-        device=device
-    ).unsqueeze(1)
+#     xs_t = torch.tensor(
+#         xs,
+#         dtype=torch.float32,
+#         device=device
+#     ).unsqueeze(1)
 
-    ys_t = torch.tensor(
-        ys,
-        dtype=torch.float32,
-        device=device
-    ).unsqueeze(1)
+#     ys_t = torch.tensor(
+#         ys,
+#         dtype=torch.float32,
+#         device=device
+#     ).unsqueeze(1)
 
-    with torch.no_grad():
-        u, v, _ = model(xs_t, ys_t).split(1, dim=1)
+#     with torch.no_grad():
+#         u, v, _ = model(xs_t, ys_t).split(1, dim=1)
 
-    u = u.cpu().numpy().flatten()
-    v = v.cpu().numpy().flatten()
+#     u = u.cpu().numpy().flatten()
+#     v = v.cpu().numpy().flatten()
 
-    ut = u*tx + v*ty
+#     ut = u*tx + v*ty
 
-    scale = 1
+#     scale = 1
 
-    xb = xs + scale*ut*tx
-    yb = ys + scale*ut*ty
+#     xb = xs + scale*ut*tx
+#     yb = ys + scale*ut*ty
 
-    plt.plot(xb, yb, 'k', linewidth=1)
+#     plt.plot(xb, yb, 'k', linewidth=1)
 
-circle = plt.Circle(
-    (cx, cy),
-    r,
-    color='white',
-    fill=False,
-    linewidth=2
-)
+# circle = plt.Circle(
+#     (cx, cy),
+#     r,
+#     color='white',
+#     fill=False,
+#     linewidth=2
+# )
 
-plt.gca().add_patch(circle)
+# plt.gca().add_patch(circle)
 
-plt.gca().set_aspect('equal')
+# plt.gca().set_aspect('equal')
 
-plt.xlabel("x")
-plt.ylabel("y")
+# plt.xlabel("x")
+# plt.ylabel("y")
 
-plt.title("Boundary Layer Profiles on Cylinder")
+# plt.title("Boundary Layer Profiles on Cylinder")
 
-plt.colorbar(label='|U|')
+# plt.colorbar(label='|U|')
 
-plt.show()
+# plt.show()
 
 #Re 41667
 #Change gap height

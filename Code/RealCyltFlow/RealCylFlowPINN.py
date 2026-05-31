@@ -330,7 +330,7 @@ def loss():
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-checkpoints = [0, 500, 1000, 2000]
+checkpoints = [0, 500, 1000, 2000, 5000]
 
 history = {
     "epoch":       [],
@@ -346,7 +346,7 @@ history = {
 X_flat_t = torch.tensor(X.flatten(), dtype=torch.float32, device=device).unsqueeze(1)
 Y_flat_t = torch.tensor(Y.flatten(), dtype=torch.float32, device=device).unsqueeze(1)
 
-for epoch in range(2001):
+for epoch in range(5001):
     optimizer.zero_grad()
     L, ns_val, dat_val, bc_val, bcgap_val = loss()
     L.backward()
@@ -469,11 +469,11 @@ plt.colorbar()
 plt.show()
 
 # ------------------ SAVE ------------------
-torch.save(model.state_dict(), "cylinder_pinn.pt")
+torch.save(model.state_dict(), "cylinder_pinn_imp0.02long.pt")
 print("Model saved.")
 
 np.savez(
-    "postprocess_data.npz",
+    "postprocess_data_imp0.02long.npz",
     X=X, Y=Y,
     cylinder=cylinder,
     gap_mask=gap_mask,

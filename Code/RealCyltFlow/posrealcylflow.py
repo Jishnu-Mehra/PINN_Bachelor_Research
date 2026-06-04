@@ -5,7 +5,7 @@ import torch.nn as nn
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-data = np.load("PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/cylinder_pinn_imp0.02.pt")
+data = np.load("PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/postprocess_data_imp0.06.npz")
 
 X = data["X"]
 Y = data["Y"]
@@ -76,7 +76,7 @@ model = PINN().to(device)
 
 model.load_state_dict(
     torch.load(
-        "PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/cylinder_pinn_imp0.02long.pt",
+        "PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/cylinder_pinn_imp0.06.pt",
         map_location=device
     )
 )
@@ -175,8 +175,6 @@ plt.title("Skin Friction Coefficient")
 
 plt.grid(True)
 
-plt.show()
-
 angles  = np.arange(0, 361, 30)
 eta_max = 40
 N_eta   = 200
@@ -261,7 +259,6 @@ ax.grid(True, axis='y', linestyle='--', alpha=0.4)
 ax.set_ylim(bottom=0)
  
 plt.tight_layout()
-plt.show()
 
 U_true = np.sqrt(u_grid**2 + v_grid**2)
 
@@ -362,8 +359,6 @@ plt.colorbar(cf2, ax=axs[1], label="|U|")
 
 plt.tight_layout()
 
-plt.show()
-
 U_hybrid = U_full.copy()
 
 U_hybrid[~gap_mask] = np.nan
@@ -416,8 +411,6 @@ plt.ylabel("y")
 plt.title("PINN in Gap + Ground Truth Outside")
 
 plt.colorbar(label="|U|")
-
-plt.show()
 
 theta_plot = np.linspace(0, 2*np.pi, 360)
 

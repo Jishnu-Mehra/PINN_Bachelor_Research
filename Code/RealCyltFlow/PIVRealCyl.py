@@ -1,80 +1,3 @@
-# import numpy as np
-# import re
-
-# file_path = "PINN_Bachelor_Research/Data/RealCylFlow/Cylinder_D_125mm_Uinf_5ms.tp"
-
-# with open(file_path, "r") as f:
-#     lines = f.readlines()
-
-# # --- Extract grid size ---
-# for line in lines:
-#     if "ZONE" in line:
-#         I = int(re.search(r"I=(\d+)", line).group(1))
-#         J = int(re.search(r"J=(\d+)", line).group(1))
-#         break
-
-# # --- Keep ONLY numeric lines ---
-# data_lines = []
-# for line in lines:
-#     # skip header / metadata
-#     if any(key in line for key in ["TITLE", "VARIABLES", "ZONE", "STRANDID"]):
-#         continue
-#     if line.strip() == "":
-#         continue
-
-#     # keep only lines that start with a number (or minus sign)
-#     if line.strip()[0] in "-0123456789":
-#         data_lines.append(line)
-
-# # --- Load safely ---
-# data = np.loadtxt(data_lines)
-
-# print("Loaded shape:", data.shape)  # should be (I*J, num_variables)
-
-# x = data[:, 0]
-# y = data[:, 1]
-# u = data[:, 2]
-# v = data[:, 3]
-# Vmag = data[:, 5]
-
-# nx, ny = I, J
-
-# x_grid = x.reshape(ny, nx)
-# y_grid = y.reshape(ny, nx)
-# u_grid = u.reshape(ny, nx)
-# v_grid = v.reshape(ny, nx)
-# V_grid = Vmag.reshape(ny, nx)
-
-# np.savez("flow_data.npz",
-#          x=x_grid,
-#          y=y_grid,
-#          u=u_grid,
-#          v=v_grid,
-#          V=V_grid)
-
-# import numpy as np
-# import matplotlib.pyplot as plt
-
-# # load
-# data = np.load("PINN_Bachelor_Research/Data/RealCylFlow/flow_data.npz")
-
-# u = data["u"]
-# v = data["v"]
-# U = data["V"]
-# x = data["x"]
-# y = data["y"]
-
-# plt.figure(figsize=(6, 4))
-# cf = plt.contourf(x, y, U, levels=20, cmap="jet")
-# plt.gca().set_aspect('equal')
-
-# plt.title("Velocity Magnitude |U| (with coordinates)")
-# plt.xlabel("x")
-# plt.ylabel("y")
-
-# plt.colorbar(cf)
-# plt.show()
-
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -87,55 +10,73 @@ np.random.seed(SEED)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Device:", device)
 
-# ------------------ LOAD ------------------
-data = np.load("PINN_Bachelor_Research/Data/RealCylFlow/flow_data.npz")
+# ------------------ LOAD PARTICLE TRACKS ------------------
+file_path = "PINN_Bachelor_Research/Data/RealCylFlow/xyzuvw_tracks.npy"
 
-u_grid = data["u"]
-v_grid = data["v"]
-X_full = data["x"]
-Y_full = data["y"]
+tracks = np.load(file_path)  # shape (N, 6): x, y, z, u, v, w
+print("Loaded shape:", tracks.shape)
 
-# ------------------ GLOBAL VALID MASK ------------------
-valid_mask = ~np.isnan(u_grid) & ~np.isnan(v_grid)
+x_all = tracks[:, 0]
+y_all = tracks[:, 1]
+z_all = tracks[:, 2]
+u_all = tracks[:, 3]
+v_all = tracks[:, 4]
+
+# ------------------ FIND MID-SPAN Z ------------------
+z_min, z_max = np.nanmin(z_all), np.nanmax(z_all)
+z_mid = 0.5 * (z_min + z_max)
+print(f"z range: [{z_min:.3f}, {z_max:.3f}], taking mid-span z = {z_mid:.3f}")
+
+z_tol = 2.0  # mm half-width of the slab; widen if too few points survive
+z_mask = np.abs(z_all - z_mid) <= z_tol
+
+x_full = x_all[z_mask]
+y_full = y_all[z_mask]
+u_full = u_all[z_mask]
+v_full = v_all[z_mask]
+
+print(f"Points in mid-span slice: {x_full.shape[0]} / {x_all.shape[0]}")
+
+# NaN filter
+valid = ~np.isnan(x_full) & ~np.isnan(y_full) & ~np.isnan(u_full) & ~np.isnan(v_full)
+x_full, y_full, u_full, v_full = x_full[valid], y_full[valid], u_full[valid], v_full[valid]
+print(f"Valid points after NaN filter: {x_full.shape[0]}")
+
+# mm/s -> m/s (drop if your tracks are already SI)
+u_full = u_full / 1000.0
+v_full = v_full / 1000.0
 
 # ------------------ PHYSICAL CROPPING ------------------
-x_min = np.min(X_full)
+x_min = np.min(x_full)
 x_max_crop = 300
 
 y_min_crop = -100
 y_max_crop = 100
 
-x_mask = (X_full[0, :] >= x_min) & (X_full[0, :] <= x_max_crop)
-y_mask = (Y_full[:, 0] >= y_min_crop) & (Y_full[:, 0] <= y_max_crop)
+crop_mask = (
+    (x_full >= x_min) & (x_full <= x_max_crop) &
+    (y_full >= y_min_crop) & (y_full <= y_max_crop)
+)
 
-x_idx = np.where(x_mask)[0]
-y_idx = np.where(y_mask)[0]
+x = x_full[crop_mask]
+y = y_full[crop_mask]
+u_grid = u_full[crop_mask]   # kept name u_grid/v_grid so downstream refs still match
+v_grid = v_full[crop_mask]
 
-x_start, x_end = x_idx[0], x_idx[-1] + 1
-y_start, y_end = y_idx[0], y_idx[-1] + 1
+print(f"Cropped point count: {x.shape[0]}")
 
-# apply crop
-u_grid = u_grid[y_start:y_end, x_start:x_end]
-v_grid = v_grid[y_start:y_end, x_start:x_end]
-X = X_full[y_start:y_end, x_start:x_end]
-Y = Y_full[y_start:y_end, x_start:x_end]
-valid_mask = valid_mask[y_start:y_end, x_start:x_end]
-
-ny, nx = u_grid.shape
-print(f"Cropped shape: ({ny}, {nx})")
-
-# bounds
-X_MIN, X_MAX = X.min(), X.max()
-Y_MIN, Y_MAX = Y.min(), Y.max()
+# bounds (needed for model input normalisation)
+X_MIN, X_MAX = x.min(), x.max()
+Y_MIN, Y_MAX = y.min(), y.max()
 
 # ------------------ GEOMETRY ------------------
 cx, cy = 0, 0
 d = 125
 r = d / 2
-ratio = 0.02
+ratio = 0.04
 gap_thickness = ratio * d
 
-dist2 = (X - cx)**2 + (Y - cy)**2
+dist2 = (x - cx)**2 + (y - cy)**2
 cylinder = dist2 <= r**2
 
 r_inner = r
@@ -144,7 +85,7 @@ r_outer = r + gap_thickness
 gap_mask = (dist2 >= r_inner**2) & (dist2 <= r_outer**2)
 gap_mask = gap_mask & (~cylinder)
 
-# boundary
+# boundary: thin annulus just outside the gap ring
 tol = (X_MAX - X_MIN) / 500
 dist = np.sqrt(dist2)
 
@@ -154,29 +95,33 @@ boundary_mask = boundary_mask & (~cylinder) & (~gap_mask)
 # data outside
 data_mask = (~cylinder) & (~gap_mask) & (~boundary_mask)
 
-# ------------------ APPLY VALID MASK ------------------
-gap_mask      &= valid_mask
-boundary_mask &= valid_mask
-data_mask     &= valid_mask
+print(f"cylinder: {cylinder.sum()}, gap: {gap_mask.sum()}, "
+      f"boundary: {boundary_mask.sum()}, data(outer): {data_mask.sum()}")
+
+# NOTE: with scattered points there's no grid-wide NaN mask like before —
+# `valid` was already applied above during loading, so every point in
+# x, y, u_grid, v_grid is already finite. No separate `valid_mask` needed
+# downstream (the old grid version needed one because NaNs sat inside the
+# array at fixed grid positions; here invalid rows were simply dropped).
 
 # ------------------ TENSORS ------------------
 def to_tensor(arr):
     return torch.tensor(arr, dtype=torch.float32, device=device).unsqueeze(1)
 
-X_gap_t = to_tensor(X[gap_mask]).requires_grad_(True)
-Y_gap_t = to_tensor(Y[gap_mask]).requires_grad_(True)
+X_gap_t = to_tensor(x[gap_mask]).requires_grad_(True)
+Y_gap_t = to_tensor(y[gap_mask]).requires_grad_(True)
 
 U_gap_t = to_tensor(u_grid[gap_mask])
 V_gap_t = to_tensor(v_grid[gap_mask])
 
-X_b_t = to_tensor(X[boundary_mask])
-Y_b_t = to_tensor(Y[boundary_mask])
+X_b_t = to_tensor(x[boundary_mask])
+Y_b_t = to_tensor(y[boundary_mask])
 
 U_b_t = to_tensor(u_grid[boundary_mask])
 V_b_t = to_tensor(v_grid[boundary_mask])
 
-X_out_t = to_tensor(X[data_mask])
-Y_out_t = to_tensor(Y[data_mask])
+X_out_t = to_tensor(x[data_mask])
+Y_out_t = to_tensor(y[data_mask])
 
 U_out_t = to_tensor(u_grid[data_mask])
 V_out_t = to_tensor(v_grid[data_mask])
@@ -298,9 +243,9 @@ def data_loss():
 
 def bc_cylinder():
     a = 2*np.pi*torch.rand(b_bc, 1, device=device)
-    x = cx + r*torch.cos(a)
-    y = cy + r*torch.sin(a)
-    u, v, _ = model(x, y).split(1, dim=1)
+    xc = cx + r*torch.cos(a)
+    yc = cy + r*torch.sin(a)
+    u, v, _ = model(xc, yc).split(1, dim=1)
     return torch.mean(u**2 + v**2)
 
 def bc_gap():
@@ -343,8 +288,14 @@ history = {
     "rel_l2_gap":  [],
 }
 
-X_flat_t = torch.tensor(X.flatten(), dtype=torch.float32, device=device).unsqueeze(1)
-Y_flat_t = torch.tensor(Y.flatten(), dtype=torch.float32, device=device).unsqueeze(1)
+# NOTE: previously X_flat_t/Y_flat_t were the flattened *grid* for dense
+# evaluation + reshape-based plotting. With scattered data there's no dense
+# grid to flatten — we evaluate the model directly at the data point
+# locations (x, y) themselves, which are already flat 1D arrays.
+X_flat_t = to_tensor(x)
+Y_flat_t = to_tensor(y)
+
+U_true = np.sqrt(u_grid**2 + v_grid**2)
 
 for epoch in range(2001):
     optimizer.zero_grad()
@@ -356,16 +307,16 @@ for epoch in range(2001):
     # ----- Metrics -----
     if epoch % 50 == 0:
         with torch.no_grad():
-            u, v, _ = model(X_flat_t, Y_flat_t).split(1, dim=1)
-            U_pred = torch.sqrt(u**2 + v**2).reshape(X.shape).cpu().numpy()
+            u_p, v_p, _ = model(X_flat_t, Y_flat_t).split(1, dim=1)
+            U_pred = torch.sqrt(u_p**2 + v_p**2).cpu().numpy().flatten()
 
-        U_true = np.sqrt(u_grid**2 + v_grid**2)
-        valid  = (~cylinder) & valid_mask & (~np.isnan(U_pred))
+        # no grid -> no valid_mask; every point here is already valid
+        outside = ~cylinder
 
-        rel_l2_full = np.linalg.norm(U_pred[valid] - U_true[valid]) / np.linalg.norm(U_true[valid])
+        rel_l2_full = np.linalg.norm(U_pred[outside] - U_true[outside]) / np.linalg.norm(U_true[outside])
 
-        gap_valid   = gap_mask & valid
-        rel_l2_gap  = np.linalg.norm(U_pred[gap_valid] - U_true[gap_valid]) / np.linalg.norm(U_true[gap_valid])
+        gap_valid  = gap_mask & outside
+        rel_l2_gap = np.linalg.norm(U_pred[gap_valid] - U_true[gap_valid]) / np.linalg.norm(U_true[gap_valid])
 
         history["epoch"].append(epoch)
         history["loss_total"].append(L.item())
@@ -391,25 +342,26 @@ for epoch in range(2001):
 
         with torch.no_grad():
             u_flat, v_flat, _ = model(X_flat_t, Y_flat_t).split(1, dim=1)
-            U_pred = torch.sqrt(u_flat**2 + v_flat**2).reshape(X.shape).cpu().numpy()
+            U_pred = torch.sqrt(u_flat**2 + v_flat**2).cpu().numpy().flatten()
 
-        U_true_mag  = np.sqrt(u_grid**2 + v_grid**2)
-        valid_mask_ = (~cylinder) & (~np.isnan(U_true_mag))
-
-        vmin   = np.min(U_true_mag[valid_mask_])
-        vmax   = np.max(U_true_mag[valid_mask_])
+        outside = ~cylinder
+        vmin   = np.min(U_true[outside])
+        vmax   = np.max(U_true[outside])
         levels = np.linspace(vmin, vmax, 20)
 
-        cf_true = axs[0].contourf(X, Y, np.sqrt(u_grid**2 + v_grid**2),
-                                  levels=levels, cmap="jet", vmin=vmin, vmax=vmax)
+        # tricontourf works directly on scattered (x, y, value) triples —
+        # no reshape/grid needed. Points inside the cylinder are dropped
+        # from the triangulation rather than masked post-hoc.
+        cf_true = axs[0].tricontourf(x[outside], y[outside], U_true[outside],
+                                      levels=levels, cmap="jet", vmin=vmin, vmax=vmax)
         axs[0].add_patch(plt.Circle((cx, cy), r+gap_thickness, color='k', fill=False, linestyle='--'))
         axs[0].add_patch(plt.Circle((cx, cy), r,               color='k', fill=False, linestyle='--'))
         axs[0].set_title(f"Ground Truth |U| (Epoch {epoch})")
         axs[0].set_xlabel("x"); axs[0].set_ylabel("y"); axs[0].axis("equal")
         plt.colorbar(cf_true, ax=axs[0])
 
-        cf_pred = axs[1].contourf(X, Y, U_pred,
-                                  levels=levels, cmap="jet", vmin=vmin, vmax=vmax)
+        cf_pred = axs[1].tricontourf(x[outside], y[outside], U_pred[outside],
+                                      levels=levels, cmap="jet", vmin=vmin, vmax=vmax)
         axs[1].add_patch(plt.Circle((cx, cy), r+gap_thickness, color='k', fill=False, linestyle='--'))
         axs[1].add_patch(plt.Circle((cx, cy), r,               color='k', fill=False, linestyle='--'))
         axs[1].set_title(f"PINN Prediction |U| (Epoch {epoch})")
@@ -448,21 +400,22 @@ plt.show()
 model.eval()
 
 with torch.no_grad():
-    u, v, _ = model(X_flat_t, Y_flat_t).split(1, dim=1)
-    u_pred= u.reshape(X.shape).cpu().numpy(),
-    v_pred= v.reshape(X.shape).cpu().numpy(),
-    U_pred = torch.sqrt(u**2 + v**2).reshape(X.shape).cpu().numpy()
+    u_flat, v_flat, _ = model(X_flat_t, Y_flat_t).split(1, dim=1)
+    u_pred = u_flat.cpu().numpy().flatten()
+    v_pred = v_flat.cpu().numpy().flatten()
+    U_pred = np.sqrt(u_pred**2 + v_pred**2)
 
-U_true   = np.sqrt(u_grid**2 + v_grid**2)
+U_true = np.sqrt(u_grid**2 + v_grid**2)
 U_hybrid = U_true.copy()
 U_hybrid[gap_mask] = U_pred[gap_mask]
 
-valid = (~cylinder) & (~np.isnan(U_true)) & (~np.isnan(U_pred))
-vmin  = np.min(U_true[valid])
-vmax  = np.max(U_true[valid])
+outside = ~cylinder
+vmin = np.min(U_true[outside])
+vmax = np.max(U_true[outside])
 
-U_plot = np.ma.array(U_hybrid, mask=cylinder)
-plt.contourf(X, Y, U_plot, levels=20, cmap="jet", vmin=vmin, vmax=vmax)
+# scattered plotting: drop cylinder points instead of masking a grid array
+plt.tricontourf(x[outside], y[outside], U_hybrid[outside],
+                 levels=20, cmap="jet", vmin=vmin, vmax=vmax)
 plt.gca().set_aspect('equal')
 plt.gca().add_patch(plt.Circle((cx, cy), r,               color='k', fill=False, linestyle='--'))
 plt.gca().add_patch(plt.Circle((cx, cy), r+gap_thickness, color='k', fill=False, linestyle='--'))
@@ -471,26 +424,19 @@ plt.colorbar()
 plt.show()
 
 # ------------------ SAVE ------------------
-# torch.save(model.state_dict(), "cylinder_pinn_imp0.064.pt")
+# torch.save(model.state_dict(), "cylinder_pinn_imp0.04.pt")
 print("Model saved.")
 
+# Saved as flat point arrays (x, y, ...) instead of 2D grids (X, Y, ...).
+# Anything reloading this file downstream (e.g. your postprocessing script)
+# needs the same scatter-based treatment — no .reshape(X.shape) available.
 # np.savez(
-#     "postprocess_data_imp0.064.npz",
-#     X=X, Y=Y,
-#     cylinder=cylinder,
+#     "postprocess_data_diag.npz",
+#     x=x, y=y,
+#     u_grid=u_grid, v_grid=v_grid,
+#     u_pred=u_pred, v_pred=v_pred, U_mag=U_pred,
 #     gap_mask=gap_mask,
-#     u_grid=u_grid,
-#     v_grid=v_grid,
+#     cylinder=cylinder,
 #     cx=cx, cy=cy, r=r,
 #     gap_thickness=gap_thickness
 # )
-np.savez(
-    "postprocess_data_diag.npz",
-    X=X, Y=Y,
-    u_grid=u_grid, v_grid=v_grid,
-    u_pred=u_pred, v_pred=v_pred, U_mag=U_pred,
-    gap_mask=gap_mask,
-    cylinder=cylinder,
-    cx=cx, cy=cy, r=r,
-    gap_thickness=gap_thickness
-)

@@ -5,7 +5,7 @@ import torch.nn as nn
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-data = np.load("PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/postprocess_data_imp0.06.npz")
+data = np.load("PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/postprocess_data_imp0.04.npz")
 
 X = data["X"]
 Y = data["Y"]
@@ -76,7 +76,7 @@ model = PINN().to(device)
 
 model.load_state_dict(
     torch.load(
-        "PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/cylinder_pinn_imp0.06.pt",
+        "PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/cylinder_pinn_imp0.04.pt",
         map_location=device
     )
 )
@@ -532,3 +532,4 @@ plt.contourf(
 #Re 41667
 #Change gap height
 #8 mm bin with 75% overlap
+#Bubble diameter 0.5 mm, data absent in first 2, from 2 on rather ok, 5 for sure

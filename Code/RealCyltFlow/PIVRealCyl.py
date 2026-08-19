@@ -159,7 +159,7 @@ b_data = 10000
 b_bc   = 5000
 b_gap  = 1000
 
-w_ns   = 0.1
+w_ns   = 1
 w_bc   = 500
 w_data = 100
 w_gap  = 50

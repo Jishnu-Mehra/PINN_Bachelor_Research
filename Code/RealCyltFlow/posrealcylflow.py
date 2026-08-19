@@ -5,7 +5,7 @@ import torch.nn as nn
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-data = np.load("PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/postprocess_data_imp0.04.npz")
+data = np.load("PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/postprocess_data_imp0.08.npz")
 
 X = data["X"]
 Y = data["Y"]
@@ -76,7 +76,7 @@ model = PINN().to(device)
 
 model.load_state_dict(
     torch.load(
-        "PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/cylinder_pinn_imp0.04.pt",
+        "PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/cylinder_pinn_imp0.08.pt",
         map_location=device
     )
 )
@@ -462,6 +462,48 @@ plt.contourf(
     levels=30,
     cmap='jet'
 )
+
+# ---- Full PINN reconstruction (already have u_full, v_full; need p_full and p_grid) ----
+p_full = p_full.reshape(X.shape).cpu().numpy()
+
+# If postprocess npz has a ground-truth pressure field, load it; otherwise p_grid may not exist
+p_grid = data["p_grid"] if "p_grid" in data.files else np.full_like(U_full, np.nan)
+
+np.savez(
+    "PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/full_pinn_reconstruction_10mm.npz",
+    X=X,
+    Y=Y,
+    u=u_full,
+    v=v_full,
+    U=U_full,
+    p=p_full,
+    cylinder=cylinder,
+)
+
+# ---- Hybrid reconstruction: PINN inside gap_mask, ground truth outside ----
+u_combined = u_grid.copy()
+v_combined = v_grid.copy()
+p_combined = p_grid.copy()
+
+u_combined[gap_mask] = u_full[gap_mask]
+v_combined[gap_mask] = v_full[gap_mask]
+p_combined[gap_mask] = p_full[gap_mask]
+
+U_combined_full = np.sqrt(u_combined**2 + v_combined**2)
+
+np.savez(
+    "PINN_Bachelor_Research/Code/RealCyltFlow/Model Saves/hybrid_gap_reconstruction_10mm.npz",
+    X=X,
+    Y=Y,
+    u=u_combined,
+    v=v_combined,
+    U=U_combined_full,
+    p=p_combined,
+    cylinder=cylinder,
+    gap_mask=gap_mask,
+)
+
+print("Saved full and hybrid reconstructions.")
 
 # for ang in angles_vis:
 

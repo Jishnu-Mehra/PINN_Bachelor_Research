@@ -132,7 +132,7 @@ Y_MIN, Y_MAX = Y.min(), Y.max()
 cx, cy = 0, 0
 d = 125
 r = d / 2
-ratio = 0.02
+ratio = 0.08
 gap_thickness = ratio * d
 
 dist2 = (X - cx)**2 + (Y - cy)**2
@@ -471,26 +471,26 @@ plt.colorbar()
 plt.show()
 
 # ------------------ SAVE ------------------
-# torch.save(model.state_dict(), "cylinder_pinn_imp0.064.pt")
+torch.save(model.state_dict(), "cylinder_pinn_imp0.08.pt")
 print("Model saved.")
 
-# np.savez(
-#     "postprocess_data_imp0.064.npz",
-#     X=X, Y=Y,
-#     cylinder=cylinder,
-#     gap_mask=gap_mask,
-#     u_grid=u_grid,
-#     v_grid=v_grid,
-#     cx=cx, cy=cy, r=r,
-#     gap_thickness=gap_thickness
-# )
 np.savez(
-    "postprocess_data_diag.npz",
+    "postprocess_data_imp0.08.npz",
     X=X, Y=Y,
-    u_grid=u_grid, v_grid=v_grid,
-    u_pred=u_pred, v_pred=v_pred, U_mag=U_pred,
-    gap_mask=gap_mask,
     cylinder=cylinder,
+    gap_mask=gap_mask,
+    u_grid=u_grid,
+    v_grid=v_grid,
     cx=cx, cy=cy, r=r,
     gap_thickness=gap_thickness
 )
+# np.savez(
+#     "postprocess_data_diag.npz",
+#     X=X, Y=Y,
+#     u_grid=u_grid, v_grid=v_grid,
+#     u_pred=u_pred, v_pred=v_pred, U_mag=U_pred,
+#     gap_mask=gap_mask,
+#     cylinder=cylinder,
+#     cx=cx, cy=cy, r=r,
+#     gap_thickness=gap_thickness
+# )

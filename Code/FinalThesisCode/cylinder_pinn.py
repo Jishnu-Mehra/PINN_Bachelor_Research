@@ -54,7 +54,7 @@ r = 25
 dist = np.sqrt((X - cx)**2 + (Y - cy)**2)
 cylinder = dist <= r
 
-gap_thickness = 2          # in grid cells; g/D = gap_thickness / (2r)
+gap_thickness = 6          # in grid cells; g/D = gap_thickness / (2r)
 R_outer = r + gap_thickness
 
 gap_mask = (dist <= R_outer) & (~cylinder)

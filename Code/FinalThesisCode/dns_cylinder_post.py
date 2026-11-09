@@ -1,4 +1,5 @@
 import os
+import csv
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -9,11 +10,11 @@ from matplotlib.path import Path
 from matplotlib.patches import PathPatch, Circle
 
 # ------------------ CONFIG ------------------
-RUN_TAG  = "gD0.080BEST"          # must match RUN_TAG printed by train_pinn_dns.py
+RUN_TAG  = "gD0.120"          # must match RUN_TAG printed by train_pinn_dns.py
 SAVE_DIR = "PINN_Bachelor_Research/Code/FinalThesisCode/Model Saves"
 FIG_DIR  = "PINN_Bachelor_Research/Code/FinalThesisCode/Figures"
-CMAP       = "viridis"        # F1, F2
-RECON_CMAP = "jet"            # F3 (same look as the old per-epoch plot)
+CMAP       = "jet"            # F1, F2, F3
+RECON_CMAP = "jet"
 
 # Original Adam-only network: raw grid coordinates, internally normalised.
 # DNS and PINN velocities are nondimensional; spatial derivatives are per grid cell.
@@ -163,24 +164,51 @@ def ring_patch(r_in, r_out):
     return PathPatch(Path(verts, codes), facecolor="none", edgecolor="none")
 
 
+def nice_levels(lo, hi, target_intervals=19):
+    """Even contour levels with decimal-friendly steps (1, 2, 2.5, or 5 × 10^n)."""
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return np.linspace(lo, hi + 1e-12, target_intervals + 1)
+    raw_step = (hi - lo) / target_intervals
+    scale = 10.0 ** np.floor(np.log10(raw_step))
+    step = next(m * scale for m in (1.0, 2.0, 2.5, 5.0, 10.0)
+                if m * scale >= raw_step)
+    start = np.floor(lo / step) * step
+    end = np.ceil(hi / step) * step
+    if lo >= 0:
+        start = max(0.0, start)
+    return np.arange(start, end + 0.5 * step, step)
+
+
+def colorbar_ticks(levels, max_ticks=6):
+    """Choose a handful of ticks directly from the discrete contour boundaries."""
+    indices = np.unique(np.linspace(0, len(levels) - 1,
+                                    min(max_ticks, len(levels))).round().astype(int))
+    return levels[indices]
+
+
 R_FAR = 10 * max(nx, ny)     # exterior clip = annulus from r to a radius far beyond the domain
 
 
 def show(ax, F, lo, hi, cmap, title, gap_only=False):
     # Use fixed levels and common limits so reference/PINN contours are directly comparable.
-    levels = np.linspace(lo, hi, 21)
-    mask = gap_eval if gap_only else fluid_eval
-    field = np.ma.masked_where(~mask, F)
+    levels = nice_levels(lo, hi)
+    # Keep the native grid populated; the exact annulus clip below limits the
+    # gap view without dropping invalid DNS nodes and collapsing it to a line.
+    mask = cylinder if not gap_only else np.zeros_like(cylinder, dtype=bool)
+    field = np.ma.masked_where(mask, F)
     im = ax.contourf((X - cx) / D_idx, (Y - cy) / D_idx, field,
                      levels=levels, cmap=cmap, vmin=lo, vmax=hi, extend="both",
                      zorder=1)
-    clip = ring_patch(r, R_outer if gap_only else R_FAR)
-    ax.add_patch(clip)
-    im.set_clip_path(clip)                 # pixels are cut by the exact circle, never by pixel squares
     if gap_only:
-        ax.add_patch(Circle((0, 0), 0.5, fill=False, edgecolor="k", lw=0.8, zorder=3))
+        clip = ring_patch(r, R_outer)
+        ax.add_patch(clip)
+        im.set_clip_path(clip)             # exact annular-gap crop
+    if gap_only:
+        ax.add_patch(Circle((0, 0), 0.5, fill=False, edgecolor="k", lw=0.8,
+                            antialiased=True, zorder=20))
     else:
-        ax.add_patch(Circle((0, 0), 0.5, facecolor="0.85", edgecolor="k", lw=0.8, zorder=3))
+        ax.add_patch(Circle((0, 0), 0.5, facecolor="0.85", edgecolor="k", lw=0.8,
+                            antialiased=True, zorder=20))
     
     ax.add_patch(Circle((0, 0), R_outer / D_idx, fill=False, edgecolor="k", lw=0.8, ls="--", zorder=4))
     ax.set_title(title)
@@ -190,7 +218,10 @@ def show(ax, F, lo, hi, cmap, title, gap_only=False):
     return im
 
 
-# ------------------ F1: full-domain reconstruction (u, v, |U|) ------------------
+# ------------------ F1: full cropped-domain reconstruction (u, v, |U|) ------------------
+# cylinder_pinn.py uses a 100x100 crop. Use its full cell-edge bounds in x/D and y/D.
+domain_x = (ext[0], ext[1])
+domain_y = (ext[2], ext[3])
 comps = [("u", u_grid, uT_d, uP_d), ("v", v_grid, vT_d, vP_d), ("|U|", U_true, UT_d, UP_d)]
 fig, axs = plt.subplots(3, 3, figsize=(11, 8.5), constrained_layout=True)
 for i, (name, t_raw, t_d, p_d) in enumerate(comps):
@@ -200,25 +231,33 @@ for i, (name, t_raw, t_d, p_d) in enumerate(comps):
     im0 = show(axs[i, 0], t_d, lo, hi, CMAP, f"{name}: reference")
     show(axs[i, 1], p_d, lo, hi, CMAP, f"{name}: PINN")
     im2 = show(axs[i, 2], e_, -elim, elim, "RdBu_r", f"{name}: error / $U_{{ref}}$")
-    fig.colorbar(im0, ax=axs[i, :2], shrink=0.8, label=name)
-    fig.colorbar(im2, ax=axs[i, 2], shrink=0.8)
+    for a in axs[i]:
+        a.set_xlim(*domain_x)
+        a.set_ylim(*domain_y)
+    fig.colorbar(im0, ax=axs[i, :2], shrink=0.8, label=name,
+                 ticks=colorbar_ticks(im0.levels))
+    fig.colorbar(im2, ax=axs[i, 2], shrink=0.8,
+                 ticks=colorbar_ticks(im2.levels))
 fig.suptitle(f"PINN reconstruction, $g/D = {GD:.3f}$ (dashed: gap edge)")
 savefig(fig, "F1_reconstruction")
 
 # ------------------ F2: annular-gap zoom ------------------
-w = (R_outer + 4) / D_idx
 lo, hi = U_true[gap_eval].min(), U_true[gap_eval].max()
-e_gap = np.abs(UP_d - UT_d) / U_REF
+e_gap = (UP_d - UT_d) / U_REF
+e_gap_lim = np.percentile(np.abs(e_gap[gap_eval]), 99)
 fig, axs = plt.subplots(1, 3, figsize=(13, 4.2), constrained_layout=True)
 im0 = show(axs[0], UT_d, lo, hi, CMAP, "$|U|$ reference (gap)", gap_only=True)
 show(axs[1], UP_d, lo, hi, CMAP, "$|U|$ PINN (gap)", gap_only=True)
-im2 = show(axs[2], e_gap, 0, np.percentile(e_gap[gap_eval], 99), "magma",
-           r"$||U|_{PINN}-|U|_{ref}|/U_{ref}$", gap_only=True)
+im2 = show(axs[2], e_gap, -e_gap_lim, e_gap_lim, "RdBu_r",
+           r"$(|U|_{PINN}-|U|_{ref})/U_{ref}$", gap_only=True)
+gap_w = (R_outer + 4) / D_idx
 for a in axs:
-    a.set_xlim(-w, w)
-    a.set_ylim(-w, w)
-fig.colorbar(im0, ax=axs[:2], shrink=0.8, label="$|U|$")
-fig.colorbar(im2, ax=axs[2], shrink=0.8)
+    a.set_xlim(-gap_w, gap_w)
+    a.set_ylim(-gap_w, gap_w)
+fig.colorbar(im0, ax=axs[:2], shrink=0.8, label="$|U|$",
+             ticks=colorbar_ticks(im0.levels))
+fig.colorbar(im2, ax=axs[2], shrink=0.8,
+             ticks=colorbar_ticks(im2.levels))
 savefig(fig, "F2_gap_zoom")
 
 # ------------------ F3: final reconstruction (last state only) ------------------
@@ -230,7 +269,11 @@ fig, axs = plt.subplots(1, 3, figsize=(17, 4), constrained_layout=True)
 im = show(axs[0], UT_d, lo, hi, RECON_CMAP, "Ground truth $|U|$")
 show(axs[1], UP_d, lo, hi, RECON_CMAP, "PINN prediction $|U|$")
 show(axs[2], UH_d, lo, hi, RECON_CMAP, "PINN in gap + ground truth outside")
-fig.colorbar(im, ax=axs, shrink=0.85, label="$|U|$")
+for a in axs:
+    a.set_xlim(*domain_x)
+    a.set_ylim(*domain_y)
+fig.colorbar(im, ax=axs, shrink=0.85, label="$|U|$",
+             ticks=colorbar_ticks(im.levels))
 savefig(fig, "F3_final_reconstruction")
 
 # ------------------ F4: skin friction, PINN vs DNS ------------------
@@ -279,6 +322,153 @@ print(f"C_f PINN range: [{np.nanmin(cf_pinn):.4g}, {np.nanmax(cf_pinn):.4g}]")
 print(f"C_f DNS fit: {np.isfinite(cf_dns).sum()}/{len(th)} angles; "
       f"samples per valid bin: {n_fit[n_fit > 0].min() if n_fit.any() else 0}–{n_fit.max()}")
 print("DNS C_f is a no-slip linear-fit estimate over the first", CF_FIT_MAX, "cells")
+
+# ------------------ DNS C_f FIT-RANGE SENSITIVITY ------------------
+# The four-cell constrained linear estimate above remains the baseline.
+# Reuse its angular bins, valid DNS nodes, radial distances, and flow-oriented
+# tangential projection for every additional range/order.
+CF_FIT_RANGES = (1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0)
+FIT_ORDERS = {"linear": 1, "quadratic": 2, "cubic": 3}
+fit_sensitivity = {}
+
+
+def separation_angle(cf_values):
+    """Identify one post-stagnation positive-to-negative crossing on the top branch."""
+    angle_deg = np.rad2deg(th)
+    branch = np.flatnonzero((angle_deg >= 30) & (angle_deg < 180))
+    crossings = []
+    for i0, i1 in zip(branch[:-1], branch[1:]):
+        c0, c1 = cf_values[i0], cf_values[i1]
+        if np.isfinite(c0) and np.isfinite(c1) and c0 >= 0 and c1 < 0:
+            angle0, angle1 = angle_deg[i0], angle_deg[i1]
+            crossings.append(angle0 + (0.0 - c0) * (angle1 - angle0) / (c1 - c0))
+    if len(crossings) == 1:
+        return crossings[0], "identified_single_crossing"
+    if len(crossings) > 1:
+        return np.nan, f"ambiguous_{len(crossings)}_downcrossings"
+    return np.nan, "no_downcrossing"
+
+
+for fit_max in CF_FIT_RANGES:
+    for order_name, order in FIT_ORDERS.items():
+        cf_fit = np.full(len(th), np.nan)
+        sample_counts = np.zeros(len(th), dtype=int)
+        statuses = np.full(len(th), "insufficient_samples", dtype=object)
+        for k, t in enumerate(th):
+            angular_delta = np.angle(np.exp(1j * (ang_nodes - t)))
+            nodes = (fluid_eval & (n_nodes > 0) & (n_nodes <= fit_max)
+                     & (np.abs(angular_delta) <= np.deg2rad(CF_BIN_DEG)))
+            n = n_nodes[nodes]
+            sample_counts[k] = len(n)
+            minimum_samples = max(CF_MIN_POINTS, order + 1)
+            if len(n) < minimum_samples:
+                continue
+
+            t_phys = th_phys[k]
+            tx = side[k] * np.sin(t_phys)
+            ty = -side[k] * np.cos(t_phys)
+            ut = u_grid[nodes] * tx + v_grid[nodes] * ty
+            # No intercept: every polynomial enforces u_t(0)=0 exactly.
+            design = np.column_stack([n**power for power in range(1, order + 1)])
+            if np.linalg.matrix_rank(design) < order:
+                statuses[k] = "rank_deficient_radial_samples"
+                continue
+            coefficients, _, rank, _ = np.linalg.lstsq(design, ut, rcond=None)
+            if rank < order:
+                statuses[k] = "rank_deficient_radial_samples"
+                continue
+            cf_fit[k] = 2 * nu * coefficients[0] / U_INF**2
+            statuses[k] = "ok"
+
+        shared = np.isfinite(cf_fit) & np.isfinite(cf_dns)
+        baseline_rms = np.sqrt(np.mean(cf_dns[shared] ** 2)) if shared.any() else np.nan
+        delta_rms = (np.sqrt(np.mean((cf_fit[shared] - cf_dns[shared]) ** 2))
+                     if shared.any() else np.nan)
+        relative_rms_pct = (100.0 * delta_rms / baseline_rms
+                            if np.isfinite(baseline_rms) and baseline_rms > 0 else np.nan)
+        sep_deg, sep_status = separation_angle(cf_fit)
+        fit_sensitivity[(fit_max, order_name)] = {
+            "cf": cf_fit,
+            "n_samples": sample_counts,
+            "status": statuses,
+            "relative_rms_pct": relative_rms_pct,
+            "separation_deg": sep_deg,
+            "separation_status": sep_status,
+        }
+
+csv_path = os.path.join(FIG_DIR, "dns_cf_fit_range.csv")
+with open(csv_path, "w", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(f, fieldnames=[
+        "fit_range_cells", "fit_order", "angle_deg", "cf", "n_samples",
+        "fit_status", "relative_rms_difference_pct", "separation_angle_deg",
+        "separation_status",
+    ])
+    writer.writeheader()
+    for (fit_max, order_name), result in fit_sensitivity.items():
+        for k, angle in enumerate(np.rad2deg(th)):
+            writer.writerow({
+                "fit_range_cells": fit_max,
+                "fit_order": order_name,
+                "angle_deg": angle,
+                "cf": result["cf"][k],
+                "n_samples": result["n_samples"][k],
+                "fit_status": result["status"][k],
+                "relative_rms_difference_pct": result["relative_rms_pct"],
+                "separation_angle_deg": result["separation_deg"],
+                "separation_status": result["separation_status"],
+            })
+
+fit_colors = plt.cm.viridis(np.linspace(0.05, 0.95, len(CF_FIT_RANGES)))
+fig, axs = plt.subplots(3, 1, figsize=(11, 10), sharex=True, constrained_layout=True)
+for ax, order_name in zip(axs, FIT_ORDERS):
+    for color, fit_max in zip(fit_colors, CF_FIT_RANGES):
+        result = fit_sensitivity[(fit_max, order_name)]
+        ax.plot(np.rad2deg(th), result["cf"], color=color, lw=1.4,
+                label=f"{fit_max:g} cells")
+    ax.plot(np.rad2deg(th), cf_dns, color="black", lw=2.0, ls="--",
+            label="current 4-cell linear baseline" if order_name == "linear" else None)
+    ax.axhline(0, color="0.4", lw=0.7)
+    ax.set_ylabel(r"$C_f$")
+    ax.set_title(f"{order_name.capitalize()} constrained fit")
+    ax.grid(alpha=0.25)
+axs[-1].set_xlabel(r"Front-referenced angle $\theta$ [deg]")
+axs[0].legend(ncol=4, fontsize=8)
+fig.savefig(os.path.join(FIG_DIR, "dns_cf_fit_range_sensitivity.png"), dpi=300)
+plt.close(fig)
+
+fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+for order_name, marker in zip(FIT_ORDERS, ("o", "s", "^")):
+    values = [fit_sensitivity[(fit_max, order_name)]["relative_rms_pct"]
+              for fit_max in CF_FIT_RANGES]
+    ax.plot(CF_FIT_RANGES, values, marker=marker, lw=1.6, label=order_name.capitalize())
+ax.axhline(0, color="0.4", lw=0.7)
+ax.set(xlabel="Maximum radial fit distance [cells]",
+       ylabel="Relative RMS difference from 4-cell linear baseline [%]",
+       xticks=CF_FIT_RANGES)
+ax.grid(alpha=0.3)
+ax.legend()
+fig.savefig(os.path.join(FIG_DIR, "dns_cf_fit_range_error.png"), dpi=300)
+plt.close(fig)
+
+fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+for order_name, marker in zip(FIT_ORDERS, ("o", "s", "^")):
+    values = [fit_sensitivity[(fit_max, order_name)]["separation_deg"]
+              for fit_max in CF_FIT_RANGES]
+    ax.plot(CF_FIT_RANGES, values, marker=marker, lw=1.6, label=order_name.capitalize())
+ax.set(xlabel="Maximum radial fit distance [cells]",
+       ylabel="First positive-to-negative $C_f$ crossing [deg]",
+       xticks=CF_FIT_RANGES)
+ax.grid(alpha=0.3)
+ax.legend()
+fig.savefig(os.path.join(FIG_DIR, "dns_cf_fit_range_separation.png"), dpi=300)
+plt.close(fig)
+
+print("DNS C_f sensitivity saved:", csv_path)
+for (fit_max, order_name), result in fit_sensitivity.items():
+    good = np.count_nonzero(result["status"] == "ok")
+    print(f"  {order_name:9s}, {fit_max:3.1f} cells: {good}/{len(th)} bins; "
+          f"relative RMS difference={result['relative_rms_pct']:.3g}% ; "
+          f"separation={result['separation_deg']:.3g} deg")
 
 fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
 ax.plot(np.rad2deg(th), cf_dns, color="tab:blue", lw=1.8, label="DNS (near-wall fit)")
@@ -369,153 +559,155 @@ ax.set_ylim(bottom=0)
 ax.grid(axis="y", alpha=0.3)
 ax.legend(loc="upper right")
 savefig(fig, "F5_BL_profiles")
-
-# ------------------ F11: boundary-layer thickness comparison ------------------
-# The largest tested gap is g/D=0.120 (4.8 cells). DNS profiles inspected there
-# approach an outer-flow value in the 20-23.9 cell range at attached sectors. Use
-# this same range for every angle; separated sectors may still vary there.
-UE_ETA_MIN, UE_ETA_MAX = 20.0, 23.9
-THICKNESS_ETA_MAX = 23.9
-UE_MIN_ABS = 1e-3 * U_INF
-
-
-def first_crossing(n, un, threshold):
-    """First outward linear crossing; return NaN when no bracket is available."""
-    valid = np.isfinite(n) & np.isfinite(un)
-    n, un = n[valid], un[valid]
-    order = np.argsort(n)
-    n, un = n[order], un[order]
-    for i in range(len(n) - 1):
-        y0, y1 = un[i], un[i + 1]
-        if (y0 - threshold) == 0:
-            return float(n[i])
-        if (y0 - threshold) * (y1 - threshold) <= 0 and y1 != y0:
-            return float(n[i] + (threshold - y0) * (n[i + 1] - n[i]) / (y1 - y0))
-    return np.nan
-
-
-def profile_thickness(n, ut, ue):
-    if not np.isfinite(ue) or abs(ue) <= UE_MIN_ABS:
-        return np.nan, np.nan, np.nan, np.nan
-    un = ut / ue
-    d50 = first_crossing(n, un, 0.50)
-    d90 = first_crossing(n, un, 0.90)
-    valid = np.isfinite(n) & np.isfinite(un) & (n >= 0) & (n <= THICKNESS_ETA_MAX)
-    n_int, un_int = n[valid], un[valid]
-    order = np.argsort(n_int)
-    n_int, un_int = n_int[order], un_int[order]
-    if len(n_int) < 2 or not np.isclose(n_int[0], 0.0, atol=1e-8):
-        return d50, d90, np.nan, np.nan
-    delta_star = trapezoid(1.0 - un_int, n_int)
-    theta_m = trapezoid(un_int * (1.0 - un_int), n_int)
-    return d50, d90, float(delta_star), float(theta_m)
-
-
-thickness_rows = []
-for ang, eta_profile, ut_d_profile, ut_p_profile in bl_profiles:
-    # DNS and PINN retain only paired samples, giving identical radial nodes.
-    paired = (np.isfinite(eta_profile) & np.isfinite(ut_d_profile) &
-              np.isfinite(ut_p_profile) &
-              (eta_profile <= THICKNESS_ETA_MAX + ETA_MAX / (N_ETA - 1)))
-    n_common = eta_profile[paired]
-    dns_common = ut_d_profile[paired]
-    pinn_common = ut_p_profile[paired]
-    order = np.argsort(n_common)
-    n_common, dns_common, pinn_common = n_common[order], dns_common[order], pinn_common[order]
-
-    # The sampled rays share coverage through 23.9 cells; interpolate both
-    # profiles to that exact endpoint so every integral has identical limits.
-    if len(n_common) >= 2 and n_common[-1] >= THICKNESS_ETA_MAX:
-        below_end = n_common < THICKNESS_ETA_MAX
-        dns_end = np.interp(THICKNESS_ETA_MAX, n_common, dns_common)
-        pinn_end = np.interp(THICKNESS_ETA_MAX, n_common, pinn_common)
-        n_common = np.append(n_common[below_end], THICKNESS_ETA_MAX)
-        dns_common = np.append(dns_common[below_end], dns_end)
-        pinn_common = np.append(pinn_common[below_end], pinn_end)
-
-    edge = ((eta_profile >= UE_ETA_MIN) & (eta_profile <= UE_ETA_MAX) &
-            np.isfinite(ut_d_profile))
-    ue_values = ut_d_profile[edge]
-    Ue = float(np.mean(ue_values)) if len(ue_values) else np.nan
-    if not len(n_common) or not np.isclose(n_common[0], 0.0, atol=1e-8):
-        print(f"WARNING {ang:5.1f} deg: common profiles do not begin at the wall")
-    elif abs(dns_common[0]) > 1e-6 or abs(pinn_common[0]) > 1e-6:
-        print(f"WARNING {ang:5.1f} deg: no-slip wall check failed (DNS={dns_common[0]:.3e}, PINN={pinn_common[0]:.3e})")
-    if not np.isfinite(Ue) or abs(Ue) <= UE_MIN_ABS:
-        print(f"WARNING {ang:5.1f} deg: DNS edge velocity is missing or below {UE_MIN_ABS:.3g}; thicknesses set to NaN")
-        vals = (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan)
-    else:
-        dns_un = dns_common / Ue
-        if np.any(dns_un < -1e-6) or np.any(pinn_common / Ue < -1e-6):
-            print(f"WARNING {ang:5.1f} deg: reverse flow is present; thickness values need interpretation")
-        dns50, dns90, dnsds, dnstm = profile_thickness(n_common, dns_common, Ue)
-        pin50, pin90, pinds, pintm = profile_thickness(n_common, pinn_common, Ue)
-        for label, value in [("DNS delta50", dns50), ("PINN delta50", pin50),
-                             ("DNS delta90", dns90), ("PINN delta90", pin90)]:
-            if not np.isfinite(value):
-                print(f"WARNING {ang:5.1f} deg: {label} crossing was not found within the sampled radial domain")
-        vals = (dns50, pin50, dns90, pin90, dnsds, pinds, dnstm, pintm)
-
-    thickness_rows.append({
-        "theta_deg": ang, "Ue": Ue,
-        "DNS_delta50": vals[0], "PINN_delta50": vals[1],
-        "DNS_delta90": vals[2], "PINN_delta90": vals[3],
-        "DNS_delta_star": vals[4], "PINN_delta_star": vals[5],
-        "DNS_theta_m": vals[6], "PINN_theta_m": vals[7],
-    })
-
-print(f"\nBoundary-layer thicknesses [grid cells]; Ue interval={UE_ETA_MIN:g}-{UE_ETA_MAX:g}, "
-      f"integration interval=0-{THICKNESS_ETA_MAX:g}")
-print("theta | Ue | DNS/PINN d50 | DNS/PINN d90 | DNS/PINN d* | DNS/PINN theta_m")
-for row in thickness_rows:
-    print(f"{row['theta_deg']:5.1f} | {row['Ue']: .4g} | "
-          f"{row['DNS_delta50']: .4g}/{row['PINN_delta50']: .4g} | "
-          f"{row['DNS_delta90']: .4g}/{row['PINN_delta90']: .4g} | "
-          f"{row['DNS_delta_star']: .4g}/{row['PINN_delta_star']: .4g} | "
-          f"{row['DNS_theta_m']: .4g}/{row['PINN_theta_m']: .4g}")
-
-import csv
-thickness_csv = os.path.join(FIG_DIR, "boundary_layer_thickness.csv")
-with open(thickness_csv, "w", newline="") as f:
-    writer = csv.DictWriter(f, fieldnames=list(thickness_rows[0].keys()))
-    writer.writeheader()
-    writer.writerows(thickness_rows)
-
-thickness_plots = [
-    ("F11a_delta50", "DNS_delta50", "PINN_delta50", r"$\delta_{50}$ [cells]", "Boundary-layer $\delta_{50}$"),
-    ("F11b_delta90", "DNS_delta90", "PINN_delta90", r"$\delta_{90}$ [cells]", "Boundary-layer $\delta_{90}$"),
-    ("F11c_displacement", "DNS_delta_star", "PINN_delta_star", r"$\delta^*$ [cells]", "Displacement thickness"),
-    ("F11d_momentum", "DNS_theta_m", "PINN_theta_m", r"$\theta_m$ [cells]", "Momentum thickness"),
-]
-for name, dns_key, pinn_key, ylabel, title in thickness_plots:
-    fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
-    ax.plot(angles, [row[dns_key] for row in thickness_rows], color="tab:blue", marker="o", label="DNS")
-    ax.plot(angles, [row[pinn_key] for row in thickness_rows], color="tab:orange", marker="s", ls="--", label="PINN")
-    ax.set(xlabel=r"Angle $\theta$ [deg]", ylabel=ylabel, title=title, xlim=(0, 360))
-    ax.set_xticks(angles)
-    ax.grid(alpha=0.3)
-    ax.legend()
-    fig.savefig(os.path.join(FIG_DIR, f"{name}_{RUN_TAG}.png"), dpi=300)
-    # fig.savefig(os.path.join(FIG_DIR, f"{name}_{RUN_TAG}.pdf"))
-
-fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
-displacement_error = np.array([row["PINN_delta_star"] - row["DNS_delta_star"] for row in thickness_rows])
-ax.plot(angles, displacement_error, color="tab:purple", marker="o")
-ax.axhline(0, color="0.4", lw=0.7)
-ax.set(xlabel=r"Angle $\theta$ [deg]", ylabel=r"PINN $\delta^*$ - DNS $\delta^*$ [cells]",
-       title="Displacement-thickness error", xlim=(0, 360))
-ax.set_xticks(angles)
-ax.grid(alpha=0.3)
-fig.savefig(os.path.join(FIG_DIR, f"F11e_displacement_error_{RUN_TAG}.png"), dpi=300)
-# fig.savefig(os.path.join(FIG_DIR, f"F11e_displacement_error_{RUN_TAG}.pdf"))
-
-# ------------------ SAVE NUMERICAL COMPARISON ------------------
-np.savez(os.path.join(FIG_DIR, f"wall_bl_comparison_{RUN_TAG}.npz"),
-         theta_deg=np.rad2deg(th), cf_dns=cf_dns, cf_pinn=cf_pinn,
-         cf_dns_fit_count=n_fit)
-
 plt.show()
 
+# # ------------------ F11: boundary-layer thickness comparison ------------------
+# # The largest tested gap is g/D=0.120 (4.8 cells). DNS profiles inspected there
+# # approach an outer-flow value in the 20-23.9 cell range at attached sectors. Use
+# # this same range for every angle; separated sectors may still vary there.
+# UE_ETA_MIN, UE_ETA_MAX = 20.0, 23.9
+# THICKNESS_ETA_MAX = 23.9
+# UE_MIN_ABS = 1e-3 * U_INF
+
+
+# def first_crossing(n, un, threshold):
+#     """First outward linear crossing; return NaN when no bracket is available."""
+#     valid = np.isfinite(n) & np.isfinite(un)
+#     n, un = n[valid], un[valid]
+#     order = np.argsort(n)
+#     n, un = n[order], un[order]
+#     for i in range(len(n) - 1):
+#         y0, y1 = un[i], un[i + 1]
+#         if (y0 - threshold) == 0:
+#             return float(n[i])
+#         if (y0 - threshold) * (y1 - threshold) <= 0 and y1 != y0:
+#             return float(n[i] + (threshold - y0) * (n[i + 1] - n[i]) / (y1 - y0))
+#     return np.nan
+
+
+# def profile_thickness(n, ut, ue):
+#     if not np.isfinite(ue) or abs(ue) <= UE_MIN_ABS:
+#         return np.nan, np.nan, np.nan, np.nan
+#     un = ut / ue
+#     d50 = first_crossing(n, un, 0.50)
+#     d90 = first_crossing(n, un, 0.90)
+#     valid = np.isfinite(n) & np.isfinite(un) & (n >= 0) & (n <= THICKNESS_ETA_MAX)
+#     n_int, un_int = n[valid], un[valid]
+#     order = np.argsort(n_int)
+#     n_int, un_int = n_int[order], un_int[order]
+#     if len(n_int) < 2 or not np.isclose(n_int[0], 0.0, atol=1e-8):
+#         return d50, d90, np.nan, np.nan
+#     delta_star = trapezoid(1.0 - un_int, n_int)
+#     theta_m = trapezoid(un_int * (1.0 - un_int), n_int)
+#     return d50, d90, float(delta_star), float(theta_m)
+
+
+# thickness_rows = []
+# for ang, eta_profile, ut_d_profile, ut_p_profile in bl_profiles:
+#     # DNS and PINN retain only paired samples, giving identical radial nodes.
+#     paired = (np.isfinite(eta_profile) & np.isfinite(ut_d_profile) &
+#               np.isfinite(ut_p_profile) &
+#               (eta_profile <= THICKNESS_ETA_MAX + ETA_MAX / (N_ETA - 1)))
+#     n_common = eta_profile[paired]
+#     dns_common = ut_d_profile[paired]
+#     pinn_common = ut_p_profile[paired]
+#     order = np.argsort(n_common)
+#     n_common, dns_common, pinn_common = n_common[order], dns_common[order], pinn_common[order]
+
+#     # The sampled rays share coverage through 23.9 cells; interpolate both
+#     # profiles to that exact endpoint so every integral has identical limits.
+#     if len(n_common) >= 2 and n_common[-1] >= THICKNESS_ETA_MAX:
+#         below_end = n_common < THICKNESS_ETA_MAX
+#         dns_end = np.interp(THICKNESS_ETA_MAX, n_common, dns_common)
+#         pinn_end = np.interp(THICKNESS_ETA_MAX, n_common, pinn_common)
+#         n_common = np.append(n_common[below_end], THICKNESS_ETA_MAX)
+#         dns_common = np.append(dns_common[below_end], dns_end)
+#         pinn_common = np.append(pinn_common[below_end], pinn_end)
+
+#     edge = ((eta_profile >= UE_ETA_MIN) & (eta_profile <= UE_ETA_MAX) &
+#             np.isfinite(ut_d_profile))
+#     ue_values = ut_d_profile[edge]
+#     Ue = float(np.mean(ue_values)) if len(ue_values) else np.nan
+#     if not len(n_common) or not np.isclose(n_common[0], 0.0, atol=1e-8):
+#         print(f"WARNING {ang:5.1f} deg: common profiles do not begin at the wall")
+#     elif abs(dns_common[0]) > 1e-6 or abs(pinn_common[0]) > 1e-6:
+#         print(f"WARNING {ang:5.1f} deg: no-slip wall check failed (DNS={dns_common[0]:.3e}, PINN={pinn_common[0]:.3e})")
+#     if not np.isfinite(Ue) or abs(Ue) <= UE_MIN_ABS:
+#         print(f"WARNING {ang:5.1f} deg: DNS edge velocity is missing or below {UE_MIN_ABS:.3g}; thicknesses set to NaN")
+#         vals = (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan)
+#     else:
+#         dns_un = dns_common / Ue
+#         if np.any(dns_un < -1e-6) or np.any(pinn_common / Ue < -1e-6):
+#             print(f"WARNING {ang:5.1f} deg: reverse flow is present; thickness values need interpretation")
+#         dns50, dns90, dnsds, dnstm = profile_thickness(n_common, dns_common, Ue)
+#         pin50, pin90, pinds, pintm = profile_thickness(n_common, pinn_common, Ue)
+#         for label, value in [("DNS delta50", dns50), ("PINN delta50", pin50),
+#                              ("DNS delta90", dns90), ("PINN delta90", pin90)]:
+#             if not np.isfinite(value):
+#                 print(f"WARNING {ang:5.1f} deg: {label} crossing was not found within the sampled radial domain")
+#         vals = (dns50, pin50, dns90, pin90, dnsds, pinds, dnstm, pintm)
+
+#     thickness_rows.append({
+#         "theta_deg": ang, "Ue": Ue,
+#         "DNS_delta50": vals[0], "PINN_delta50": vals[1],
+#         "DNS_delta90": vals[2], "PINN_delta90": vals[3],
+#         "DNS_delta_star": vals[4], "PINN_delta_star": vals[5],
+#         "DNS_theta_m": vals[6], "PINN_theta_m": vals[7],
+#     })
+
+# print(f"\nBoundary-layer thicknesses [grid cells]; Ue interval={UE_ETA_MIN:g}-{UE_ETA_MAX:g}, "
+#       f"integration interval=0-{THICKNESS_ETA_MAX:g}")
+# print("theta | Ue | DNS/PINN d50 | DNS/PINN d90 | DNS/PINN d* | DNS/PINN theta_m")
+# for row in thickness_rows:
+#     print(f"{row['theta_deg']:5.1f} | {row['Ue']: .4g} | "
+#           f"{row['DNS_delta50']: .4g}/{row['PINN_delta50']: .4g} | "
+#           f"{row['DNS_delta90']: .4g}/{row['PINN_delta90']: .4g} | "
+#           f"{row['DNS_delta_star']: .4g}/{row['PINN_delta_star']: .4g} | "
+#           f"{row['DNS_theta_m']: .4g}/{row['PINN_theta_m']: .4g}")
+
+# import csv
+# thickness_csv = os.path.join(FIG_DIR, "boundary_layer_thickness.csv")
+# with open(thickness_csv, "w", newline="") as f:
+#     writer = csv.DictWriter(f, fieldnames=list(thickness_rows[0].keys()))
+#     writer.writeheader()
+#     writer.writerows(thickness_rows)
+
+# thickness_plots = [
+#     ("F11a_delta50", "DNS_delta50", "PINN_delta50", r"$\delta_{50}$ [cells]", "Boundary-layer $\delta_{50}$"),
+#     ("F11b_delta90", "DNS_delta90", "PINN_delta90", r"$\delta_{90}$ [cells]", "Boundary-layer $\delta_{90}$"),
+#     ("F11c_displacement", "DNS_delta_star", "PINN_delta_star", r"$\delta^*$ [cells]", "Displacement thickness"),
+#     ("F11d_momentum", "DNS_theta_m", "PINN_theta_m", r"$\theta_m$ [cells]", "Momentum thickness"),
+# ]
+# for name, dns_key, pinn_key, ylabel, title in thickness_plots:
+#     fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
+#     ax.plot(angles, [row[dns_key] for row in thickness_rows], color="tab:blue", marker="o", label="DNS")
+#     ax.plot(angles, [row[pinn_key] for row in thickness_rows], color="tab:orange", marker="s", ls="--", label="PINN")
+#     ax.set(xlabel=r"Angle $\theta$ [deg]", ylabel=ylabel, title=title, xlim=(0, 360))
+#     ax.set_xticks(angles)
+#     ax.grid(alpha=0.3)
+#     ax.legend()
+#     fig.savefig(os.path.join(FIG_DIR, f"{name}_{RUN_TAG}.png"), dpi=300)
+#     # fig.savefig(os.path.join(FIG_DIR, f"{name}_{RUN_TAG}.pdf"))
+
+# fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
+# displacement_error = np.array([row["PINN_delta_star"] - row["DNS_delta_star"] for row in thickness_rows])
+# ax.plot(angles, displacement_error, color="tab:purple", marker="o")
+# ax.axhline(0, color="0.4", lw=0.7)
+# ax.set(xlabel=r"Angle $\theta$ [deg]", ylabel=r"PINN $\delta^*$ - DNS $\delta^*$ [cells]",
+#        title="Displacement-thickness error", xlim=(0, 360))
+# ax.set_xticks(angles)
+# ax.grid(alpha=0.3)
+# fig.savefig(os.path.join(FIG_DIR, f"F11e_displacement_error_{RUN_TAG}.png"), dpi=300)
+# # fig.savefig(os.path.join(FIG_DIR, f"F11e_displacement_error_{RUN_TAG}.pdf"))
+
+# # ------------------ SAVE NUMERICAL COMPARISON ------------------
+# np.savez(os.path.join(FIG_DIR, f"wall_bl_comparison_{RUN_TAG}.npz"),
+#          theta_deg=np.rad2deg(th), cf_dns=cf_dns, cf_pinn=cf_pinn,
+#          cf_dns_fit_count=n_fit)
+
+# plt.show()
+
+#-----------------------------------------------------------------------------------------------------------------------------
 # import os
 # import numpy as np
 # import matplotlib.pyplot as plt
